@@ -1,0 +1,46 @@
+#!/bin/bash
+# Run the test suite before a push.
+#
+# The configuration runs on more than one machine. A push is how a broken
+# commit reaches the other one, so the suite runs here, at the last moment
+# where stopping is still free.
+#
+# Git enables this hook through core.hooksPath. See the README:
+#
+#     git config core.hooksPath .githooks
+#
+# To push anyway, use `git push --no-verify`. The suite takes about two
+# minutes and nothing in it reaches the network.
+
+set -uo pipefail
+
+repo=$(git rev-parse --show-toplevel)
+
+# A push that only deletes a remote branch changes no code. Git names each
+# ref on stdin as "<local ref> <local sha> <remote ref> <remote sha>", and a
+# deletion sends an all-zero local sha.
+#
+# The `|| [ -n "$local_ref" ]` keeps the last line when it has no newline.
+# `read` returns non-zero there, but it still fills the variables.
+only_deletes=1
+local_ref=""
+while read -r local_ref local_sha _remote_ref _remote_sha || [ -n "$local_ref" ]; do
+  case "${local_sha:-}" in
+    *[!0]*) only_deletes=0 ;;
+  esac
+  local_ref=""
+done
+
+if [ "$only_deletes" -eq 1 ]; then
+  exit 0
+fi
+
+echo "Running the test suite before the push. Use --no-verify to skip it."
+if bash "$repo/tests/run.sh"; then
+  exit 0
+fi
+
+echo
+echo "The push stopped, because the tests failed." >&2
+echo "Fix them, or push with: git push --no-verify" >&2
+exit 1

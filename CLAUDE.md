@@ -12,8 +12,12 @@ This configuration has a test suite. Every change needs a test.
 
     tests/run.sh                        # everything, about a minute
     tests/run.sh lua                    # the Neovim specs only
-    tests/run.sh hook                   # the hook script tests only
+    tests/run.sh hook                   # the Claude hook script tests only
+    tests/run.sh prepush                # the git pre-push hook tests only
     tests/run.sh spec/panel_spec.lua    # one spec file
+
+The `.githooks/pre-push` hook runs the suite before every push. Never push
+with `--no-verify` to get past a failing test.
 
 `tests/README.md` explains the layout, the mocks, and how to write a spec.
 
@@ -25,6 +29,8 @@ connection. Use the existing seams:
 - `helpers.mock_claudecode()` for the Claude terminal.
 - `helpers.encode()` plus `follow.handle()` for a hook payload.
 - `tests/hook/mock/nvim` for the RPC calls the hook script makes.
+- `helpers.stub_git(update, answers)` for anything in `config.update` that
+  would otherwise reach GitHub.
 - `helpers.stub_input` and `helpers.capture_notify` for anything that would
   block on you.
 

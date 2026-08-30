@@ -3,7 +3,8 @@
 #
 #   tests/run.sh              everything
 #   tests/run.sh lua          the Neovim specs only
-#   tests/run.sh hook         the hook script tests only
+#   tests/run.sh hook         the Claude hook script tests only
+#   tests/run.sh prepush      the git pre-push hook tests only
 #   tests/run.sh spec/x.lua   one spec file
 #
 # Nothing here starts Claude, opens a network connection, or spends a token.
@@ -17,6 +18,7 @@ target="${1:-all}"
 
 lua_status=0
 hook_status=0
+prepush_status=0
 
 run_lua() {
   local file="$1"
@@ -42,12 +44,16 @@ case "$target" in
   all)
     run_lua_suite || lua_status=1
     bash "$here/hook/run.sh" || hook_status=1
+    bash "$here/prepush/run.sh" || prepush_status=1
     ;;
   lua)
     run_lua_suite || lua_status=1
     ;;
   hook)
     bash "$here/hook/run.sh" || hook_status=1
+    ;;
+  prepush)
+    bash "$here/prepush/run.sh" || prepush_status=1
     ;;
   *)
     # A single spec file, relative to tests/ or absolute.
@@ -63,7 +69,7 @@ case "$target" in
 esac
 
 echo
-if [ "$lua_status" -eq 0 ] && [ "$hook_status" -eq 0 ]; then
+if [ "$lua_status" -eq 0 ] && [ "$hook_status" -eq 0 ] && [ "$prepush_status" -eq 0 ]; then
   printf '\033[32mAll tests passed.\033[0m\n'
   exit 0
 fi

@@ -279,11 +279,13 @@ The code is `lua/config/session.lua` and `lua/config/bufstack.lua`.
 
 ## Tests
 
-Run `tests/run.sh` before you commit. It runs 376 tests in about two minutes.
+Run `tests/run.sh` before you commit. It runs 389 tests in about two minutes.
+The pre-push hook runs it for you. See "Two machines".
 
     tests/run.sh              everything
     tests/run.sh lua          the Neovim specs only
-    tests/run.sh hook         the hook script tests only
+    tests/run.sh hook         the Claude hook script tests only
+    tests/run.sh prepush      the git pre-push hook tests only
 
 Nothing in the suite starts Claude, reaches the network, or spends a token.
 The Claude terminal, the hook script, and the RPC calls are all mocked.
@@ -322,6 +324,7 @@ personal machine and the work machine, and each one pulls the other's commits.
     gh auth login
     mv ~/.config/nvim ~/.config/nvim.before
     git clone https://github.com/Sparrkyy/nvim-config.git ~/.config/nvim
+    git -C ~/.config/nvim config core.hooksPath .githooks
     nvim
 
 lazy.nvim installs the plugins on the first start. `lazy-lock.json` is in the
@@ -351,11 +354,19 @@ you with a working editor and no message. Use `:ConfigCheck` to see the reason.
 ### Pushing your changes
 
     cd ~/.config/nvim
-    tests/run.sh
     git add -A && git commit -m "..." && git push
 
-The code is `lua/config/update.lua`, and its spec is
-`tests/spec/update_spec.lua`.
+`.githooks/pre-push` runs the whole suite before the push leaves the machine.
+A failing suite stops the push, so a broken commit never reaches the other
+machine. To push anyway, use `git push --no-verify`.
+
+Git finds the hook through `core.hooksPath`, which is local to each clone.
+Set it once per machine:
+
+    git -C ~/.config/nvim config core.hooksPath .githooks
+
+The update check is `lua/config/update.lua`, with `tests/spec/update_spec.lua`.
+The pre-push hook is `.githooks/pre-push`, with `tests/prepush/run.sh`.
 
 ## Maintenance
 
