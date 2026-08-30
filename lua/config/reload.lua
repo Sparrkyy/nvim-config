@@ -1,0 +1,116 @@
+-- Reload the configuration without leaving Neovim.
+--
+-- It drops every `config.*`, `claude.*`, and `ghostty.*` module from the Lua
+-- cache, then re-runs them in the order init.lua uses. Two modules are never
+-- dropped:
+--   config.lazy    lazy.setup() must run once per session
+--   config.reload  this file is running
+--
+-- Plugin options do not reload. lazy.nvim hands `opts` to a plugin's setup()
+-- once, when the plugin loads. Change a plugin spec and you must restart.
+
+local M = {}
+
+local PATTERNS = { "^config%.", "^claude%.", "^ghostty$", "^ghostty%." }
+local KEEP = { ["config.lazy"] = true, ["config.reload"] = true }
+
+-- The modules init.lua requires, in its order.
+local PLAIN = { "config.options", "config.keymaps", "config.autocmds" }
+local WITH_SETUP = { "config.bufstack", "config.session", "config.newfile", "claude.follow" }
+
+local function reloadable(name)
+  if KEEP[name] then
+    return false
+  end
+  for _, pattern in ipairs(PATTERNS) do
+    if name:match(pattern) then
+      return true
+    end
+  end
+  return false
+end
+
+--- Let follow mode let go of the editor before its module disappears.
+local function release_state()
+  local ok, follow = pcall(require, "claude.follow")
+  if not ok then
+    return
+  end
+  pcall(follow.clear_queue)
+  pcall(follow.clear_marks)
+  pcall(follow.unregister)
+end
+
+--- Drop and re-run the configuration.
+---@return table names the modules that were reloaded, sorted
+---@return table failures { module, error } for anything that would not load
+function M.reload()
+  release_state()
+
+  local cleared = {}
+  for name in pairs(package.loaded) do
+    if reloadable(name) then
+      table.insert(cleared, name)
+    end
+  end
+  for _, name in ipairs(cleared) do
+    package.loaded[name] = nil
+  end
+
+  local failures = {}
+  local function load(name, call_setup)
+    local ok, result = pcall(require, name)
+    if not ok then
+      table.insert(failures, { module = name, err = tostring(result) })
+      return
+    end
+    if call_setup and type(result) == "table" and type(result.setup) == "function" then
+      local setup_ok, err = pcall(result.setup)
+      if not setup_ok then
+        table.insert(failures, { module = name .. ".setup", err = tostring(err) })
+      end
+    end
+  end
+
+  for _, name in ipairs(PLAIN) do
+    load(name, false)
+  end
+
+  -- The colourscheme is a module too, so a colour edit shows up here.
+  local hl_ok, hl_err = pcall(vim.cmd.colorscheme, "ghostty")
+  if not hl_ok then
+    table.insert(failures, { module = "colors.ghostty", err = tostring(hl_err) })
+  end
+  for _, name in ipairs(WITH_SETUP) do
+    load(name, true)
+  end
+
+  table.sort(cleared)
+  return cleared, failures
+end
+
+--- Reload and report.
+function M.run()
+  local cleared, failures = M.reload()
+
+  if #failures > 0 then
+    local lines = { string.format("Reloaded %d modules, %d failed:", #cleared, #failures) }
+    for _, f in ipairs(failures) do
+      table.insert(lines, "  " .. f.module .. ": " .. f.err:gsub("\n.*", ""))
+    end
+    vim.notify(table.concat(lines, "\n"), vim.log.levels.ERROR, { title = "Reload" })
+    return
+  end
+
+  vim.notify(string.format("Reloaded %d modules. Plugin options need a restart.", #cleared),
+    vim.log.levels.INFO, { title = "Reload" })
+end
+
+function M.setup()
+  vim.api.nvim_create_user_command("Reload", M.run, {
+    desc = "Reload the config modules, without the plugin options",
+  })
+  vim.keymap.set("n", "<leader>R", M.run, { desc = "Reload config" })
+end
+
+return M

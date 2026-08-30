@@ -1,0 +1,28 @@
+#!/bin/bash
+# A fake nvim for the hook tests.
+#
+# The hook script calls:
+#   nvim --server <socket> --remote-expr <expr>
+# This records every expression in $MOCK_NVIM_LOG, one per line, and prints
+# whatever $MOCK_NVIM_REPLY holds. No editor and no Claude process starts.
+
+expr=""
+want_expr=0
+for arg in "$@"; do
+  if [ "$want_expr" = "1" ]; then
+    expr="$arg"
+    want_expr=0
+  fi
+  [ "$arg" = "--remote-expr" ] && want_expr=1
+done
+
+if [ -n "${MOCK_NVIM_LOG:-}" ] && [ -n "$expr" ]; then
+  printf '%s\n' "$expr" >> "$MOCK_NVIM_LOG"
+fi
+
+# A reply is only meaningful for `ask`. `send` throws its output away.
+if [ -n "${MOCK_NVIM_REPLY:-}" ]; then
+  printf '%s' "$MOCK_NVIM_REPLY"
+fi
+
+exit "${MOCK_NVIM_EXIT:-0}"

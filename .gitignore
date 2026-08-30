@@ -1,0 +1,8 @@
+# Neovim writes plugin code and runtime state elsewhere (stdpath "data" and
+# "state"). Nothing generated belongs in this directory, so this list is short.
+*.swp
+*.swo
+.DS_Store
+
+# Local overrides. Keep a machine-specific tweak out of the shared history.
+lua/config/local.lua

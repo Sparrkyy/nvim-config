@@ -1,0 +1,82 @@
+#!/bin/bash
+# A fake `claude` for the one-shot tests.
+#
+# It never contacts Anthropic. It records its arguments, emits the stream-json
+# events a real `claude -p --output-format stream-json` emits, optionally
+# rewrites a line of a file, and exits.
+#
+#   MOCK_CLAUDE_LOG     file to append the prompt and the flags to
+#   MOCK_CLAUDE_FILE    file to edit
+#   MOCK_CLAUDE_LINE    1-indexed line to replace
+#   MOCK_CLAUDE_TEXT    replacement text
+#   MOCK_CLAUDE_RESULT  the "result" string in the final event
+#   MOCK_CLAUDE_THINK   thinking text to stream before the work
+#   MOCK_CLAUDE_TOOL    tool name to report as a tool_use
+#   MOCK_CLAUDE_DELAY   seconds to pause between events
+#   MOCK_CLAUDE_EXIT    exit code (default 0)
+#   MOCK_CLAUDE_STDERR  text to print on stderr
+
+if [ -n "${MOCK_CLAUDE_LOG:-}" ]; then
+  {
+    echo "--- invocation ---"
+    for arg in "$@"; do
+      printf '%s\n' "$arg"
+    done
+    echo "--- env ---"
+    echo "CLAUDE_NVIM_FOLLOW_DISABLE=${CLAUDE_NVIM_FOLLOW_DISABLE:-}"
+    echo "cwd=$(pwd)"
+  } >> "$MOCK_CLAUDE_LOG"
+fi
+
+if [ -n "${MOCK_CLAUDE_STDERR:-}" ]; then
+  printf '%s' "$MOCK_CLAUDE_STDERR" >&2
+fi
+
+json_string() {
+  printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()), end="")'
+}
+
+pause() {
+  [ -n "${MOCK_CLAUDE_DELAY:-}" ] && sleep "$MOCK_CLAUDE_DELAY"
+  return 0
+}
+
+# The session announces itself.
+printf '{"type":"system","subtype":"init","model":"claude-sonnet-5"}\n'
+pause
+
+# Thinking, streamed as partial deltas.
+if [ -n "${MOCK_CLAUDE_THINK:-}" ]; then
+  printf '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":%s}}}\n' \
+    "$(json_string "$MOCK_CLAUDE_THINK")"
+  pause
+fi
+
+# A tool call.
+if [ -n "${MOCK_CLAUDE_TOOL:-}" ]; then
+  printf '{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":%s,"input":{"file_path":%s}}}}\n' \
+    "$(json_string "$MOCK_CLAUDE_TOOL")" "$(json_string "${MOCK_CLAUDE_FILE:-/dev/null}")"
+  pause
+fi
+
+# The edit itself.
+if [ -n "${MOCK_CLAUDE_FILE:-}" ] && [ -f "${MOCK_CLAUDE_FILE}" ]; then
+  python3 - "$MOCK_CLAUDE_FILE" "${MOCK_CLAUDE_LINE:-1}" "${MOCK_CLAUDE_TEXT:-}" <<'PY'
+import sys
+path, line, text = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+lines = open(path).read().split("\n")
+if 1 <= line <= len(lines):
+    lines[line - 1] = text
+open(path, "w").write("\n".join(lines))
+PY
+fi
+
+# A whole assistant message, the way the CLI also reports one.
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}\n'
+pause
+
+result="${MOCK_CLAUDE_RESULT:-Changed the import to a type-only import.}"
+printf '{"type":"result","subtype":"success","is_error":false,"result":%s,"total_cost_usd":0.0}\n' \
+  "$(json_string "$result")"
+
+exit "${MOCK_CLAUDE_EXIT:-0}"
