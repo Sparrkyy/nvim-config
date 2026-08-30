@@ -16,7 +16,7 @@ local KEEP = { ["config.lazy"] = true, ["config.reload"] = true }
 
 -- The modules init.lua requires, in its order.
 local PLAIN = { "config.options", "config.keymaps", "config.autocmds" }
-local WITH_SETUP = { "config.bufstack", "config.session", "config.newfile", "claude.follow" }
+local WITH_SETUP = { "config.bufstack", "config.session", "config.newfile", "claude.follow", "config.update" }
 
 local function reloadable(name)
   if KEEP[name] then

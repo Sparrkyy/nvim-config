@@ -79,6 +79,11 @@ describe("reload", function()
     assert.is_true(found)
   end)
 
+  it("re-registers the update check, so :ConfigUpdate survives a reload", function()
+    reload.reload()
+    assert.is_truthy(vim.api.nvim_get_commands({})["ConfigUpdate"])
+  end)
+
   it("re-registers follow mode with the hook", function()
     reload.reload()
     -- follow.setup registers on VimEnter and DirChanged, so fire one.

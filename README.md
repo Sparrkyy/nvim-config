@@ -7,7 +7,7 @@ side split with diff review.
 
     init.lua
     colors/        the colourscheme entry point
-    lua/config/    options, keymaps, autocmds, lazy.nvim bootstrap
+    lua/config/    options, keymaps, autocmds, lazy.nvim bootstrap, sync
     lua/ghostty/   the colourscheme: palette and highlight groups
     lua/plugins/   one file per area
     lua/claude/    follow mode, panels, prompt context
@@ -279,7 +279,7 @@ The code is `lua/config/session.lua` and `lua/config/bufstack.lua`.
 
 ## Tests
 
-Run `tests/run.sh` before you commit. It runs 351 tests in about two minutes.
+Run `tests/run.sh` before you commit. It runs 376 tests in about two minutes.
 
     tests/run.sh              everything
     tests/run.sh lua          the Neovim specs only
@@ -311,8 +311,55 @@ key calls, not the list of keys.
 
 A module with a syntax error is named in the message, and the rest still load.
 
+## Two machines
+
+This configuration is a private GitHub repository:
+[Sparrkyy/nvim-config](https://github.com/Sparrkyy/nvim-config). It runs on the
+personal machine and the work machine, and each one pulls the other's commits.
+
+### Set up the second machine
+
+    gh auth login
+    mv ~/.config/nvim ~/.config/nvim.before
+    git clone https://github.com/Sparrkyy/nvim-config.git ~/.config/nvim
+    nvim
+
+lazy.nvim installs the plugins on the first start. `lazy-lock.json` is in the
+repository, so both machines run the same plugin versions.
+
+### Staying in step
+
+Neovim checks GitHub two seconds after startup. The fetch runs in the
+background and nothing blocks. If the branch holds commits you do not have, a
+notification says how many.
+
+| Command | Action |
+| ------- | ------ |
+| `:ConfigUpdate`, `<leader>u` | Fast-forward to the GitHub branch |
+| `:ConfigCheck` | Ask GitHub now, and report either way |
+
+The pull is never automatic. A broken commit from the other machine would
+break the editor you are sitting in, so you choose the moment.
+
+`:ConfigUpdate` refuses to run over uncommitted changes, and it only
+fast-forwards. Diverged history is yours to sort out with git. After a pull,
+`:Reload` picks up the module changes; a plugin change needs a restart.
+
+The startup check is silent when it fails. No network and no remote both leave
+you with a working editor and no message. Use `:ConfigCheck` to see the reason.
+
+### Pushing your changes
+
+    cd ~/.config/nvim
+    tests/run.sh
+    git add -A && git commit -m "..." && git push
+
+The code is `lua/config/update.lua`, and its spec is
+`tests/spec/update_spec.lua`.
+
 ## Maintenance
 
 - `:Lazy` manages plugins. `:Mason` manages language servers.
 - `:checkhealth` reports problems.
-- The previous configuration is in `init.vim.bak.20260827`.
+- The previous `init.vim` is in the first commit, as
+  `init.vim.bak.20260827`. Run `git show 0ac287c:init.vim.bak.20260827`.

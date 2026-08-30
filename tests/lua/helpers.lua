@@ -138,4 +138,21 @@ function H.reset_buffers()
   vim.cmd("silent! enew")
 end
 
+--- Answer git for config.update, so no test spawns a command or reaches
+--- GitHub. `answers` maps the first git argument to { ok = boolean, out =
+--- string }. An argument that is not listed succeeds with empty output.
+---@param update table the config.update module
+---@param answers table|nil
+---@return table stub with .calls, the argument lists git received in order
+function H.stub_git(update, answers)
+  local stub = { calls = {} }
+  answers = answers or {}
+  update.git = function(args, done)
+    table.insert(stub.calls, args)
+    local answer = answers[args[1]] or {}
+    done(answer.ok ~= false, answer.out or "")
+  end
+  return stub
+end
+
 return H
