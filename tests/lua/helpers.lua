@@ -155,4 +155,70 @@ function H.stub_git(update, answers)
   return stub
 end
 
+--- Flow ---------------------------------------------------------------------
+
+--- Point flow.store at a throwaway directory, so no test touches your real
+--- state. Returns the module and the directory.
+---@param store table the flow.store module
+function H.flow_root(store)
+  store.root = H.tmpdir() .. "/flow"
+  return store.root
+end
+
+--- Answer flow.job.spawn with a canned NDJSON stream, so no test starts the
+--- Claude CLI. `result` is the text the final event carries.
+---@param job table the flow.job module
+---@param result string|table a string result, or a table encoded as JSON
+---@param opts table|nil { code = number, session_id = string, error = boolean }
+---@return table stub with .commands, the argument lists claude received
+function H.stub_flow_spawn(job, result, opts)
+  opts = opts or {}
+  local stub = { commands = {} }
+  if type(result) == "table" then
+    result = vim.json.encode(result)
+  end
+
+  job.spawn = function(cmd, o, on_exit)
+    table.insert(stub.commands, cmd)
+    local events = {
+      { type = "system", subtype = "init", session_id = opts.session_id or "test-session" },
+      {
+        type = "result",
+        subtype = "success",
+        result = result,
+        session_id = opts.session_id or "test-session",
+        total_cost_usd = 0.01,
+        is_error = opts.error or false,
+      },
+    }
+    for _, event in ipairs(events) do
+      o.stdout(nil, vim.json.encode(event) .. "\n")
+    end
+    on_exit({ code = opts.code or 0 })
+    return { kill = function() end }
+  end
+  return stub
+end
+
+--- Replace flow.job.run outright. `answer` is called with the spec and returns
+--- the result text. Use this when the prompt matters and the stream does not.
+---@param job table the flow.job module
+---@param answer function|string
+---@return table stub with .specs, every spec the caller passed
+function H.stub_flow_job(job, answer)
+  local stub = { specs = {} }
+  job.run = function(spec)
+    table.insert(stub.specs, spec)
+    local text = type(answer) == "function" and answer(spec) or answer
+    if type(text) == "table" then
+      text = vim.json.encode(text)
+    end
+    if spec.on_done then
+      spec.on_done(text ~= nil, text, { session_id = "test-session", cost = 0.01 })
+    end
+    return #stub.specs
+  end
+  return stub
+end
+
 return H

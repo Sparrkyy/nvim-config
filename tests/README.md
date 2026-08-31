@@ -1,6 +1,6 @@
 # Tests
 
-351 tests cover this configuration. None of them start Claude, open a network
+618 tests cover this configuration. None of them start Claude, open a network
 connection, or spend a token.
 
 ## Run them
@@ -9,6 +9,8 @@ connection, or spend a token.
 tests/run.sh                        # everything
 tests/run.sh lua                    # the Neovim specs only
 tests/run.sh hook                   # the hook script tests only
+tests/run.sh server                 # the Flow review server tests only
+tests/run.sh install                # the setup script tests only
 tests/run.sh spec/panel_spec.lua    # one spec file
 ```
 
@@ -22,8 +24,10 @@ hook or in CI.
 | `minimal_init.lua` | The Neovim setup for the specs. It loads this config and plenary, and no plugin manager. |
 | `lua/helpers.lua` | Shared helpers and every mock. |
 | `spec/*_spec.lua` | The Neovim specs, run by plenary. |
-| `hook/run.sh` | The tests for `~/.claude/hooks/nvim-follow.sh`. |
+| `hook/run.sh` | The tests for `claude/nvim-follow.sh`, the Claude Code hook. |
 | `hook/mock/nvim` | A fake `nvim` that records RPC calls. |
+| `server/run.sh` | The tests for `lua/flow/web/server.js`, the plan review server. |
+| `install/run.sh` | The tests for `install.sh`, run against a throwaway `HOME`. |
 
 ## What each spec covers
 
@@ -47,10 +51,15 @@ hook or in CI.
 | `fixit_spec.lua` | Diagnostic fixes, with the `claude` binary mocked. |
 | `reload_spec.lua` | `:Reload`, including what it must not drop. |
 | `config_spec.lua` | The plugin settings, so a preference cannot regress unseen. |
+| `flow_store_spec.lua` | Flow on disk: plans, revisions, comments, steps, diffs, the undo journal. |
+| `flow_job_spec.lua` | Flow's headless Claude engine: the command, the stream, the failures. |
+| `flow_planner_spec.lua` | Writing the design document, and revising it from your comments. |
+| `flow_ui_spec.lua` | The inline change preview and the stack panel. |
+| `flow_stack_spec.lua` | The change stack: decompose, look ahead, apply, undo, staleness. |
 
 ## How Claude is mocked
 
-Nothing reaches the real Claude CLI. Four seams make that true.
+Nothing reaches the real Claude CLI. These seams make that true.
 
 1. **The terminal.** `helpers.mock_claudecode()` puts a stub in
    `package.loaded["claudecode.terminal"]`. It records every send in a table
@@ -75,6 +84,20 @@ Nothing reaches the real Claude CLI. Four seams make that true.
    `MOCK_CLAUDE_DELAY`, `MOCK_CLAUDE_EXIT`, and `MOCK_CLAUDE_STDERR`.
    `MOCK_CLAUDE_DELAY` is what lets a test hold two sessions in flight at
    once.
+
+6. **Flow's engine.** `helpers.stub_flow_spawn(job, result)` replaces
+   `flow.job.spawn`, the one call that reaches a process. It feeds the module a
+   canned `stream-json` stream, so the parsing runs for real. Use
+   `helpers.stub_flow_job(job, answer)` instead when only the prompt matters:
+   it replaces `flow.job.run` outright, and `answer` may be a function of the
+   spec, so one stub can answer a decompose job and a diff job differently.
+7. **Flow's state.** `helpers.flow_root(store)` points `flow.store.root` at a
+   throwaway directory. Call it in every `before_each`, or a spec writes into
+   the plans you are really working on.
+8. **Flow's review server.** `server/run.sh` starts the real `server.js` on a
+   temporary state root and a port the kernel picks, and puts `hook/mock/nvim`
+   on `PATH`. So the HTTP routes and the call back into Neovim are both tested
+   against the real server, with nothing real behind it.
 
 `vim.ui.input` and `vim.notify` are stubbed too, by `helpers.stub_input` and
 `helpers.capture_notify`. No test blocks waiting for you.

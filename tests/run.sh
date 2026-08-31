@@ -4,6 +4,8 @@
 #   tests/run.sh              everything
 #   tests/run.sh lua          the Neovim specs only
 #   tests/run.sh hook         the Claude hook script tests only
+#   tests/run.sh server       the Flow review server tests only
+#   tests/run.sh install      the setup script tests only
 #   tests/run.sh prepush      the git pre-push hook tests only
 #   tests/run.sh spec/x.lua   one spec file
 #
@@ -18,6 +20,8 @@ target="${1:-all}"
 
 lua_status=0
 hook_status=0
+server_status=0
+install_status=0
 prepush_status=0
 
 run_lua() {
@@ -44,6 +48,8 @@ case "$target" in
   all)
     run_lua_suite || lua_status=1
     bash "$here/hook/run.sh" || hook_status=1
+    bash "$here/server/run.sh" || server_status=1
+    bash "$here/install/run.sh" || install_status=1
     bash "$here/prepush/run.sh" || prepush_status=1
     ;;
   lua)
@@ -51,6 +57,12 @@ case "$target" in
     ;;
   hook)
     bash "$here/hook/run.sh" || hook_status=1
+    ;;
+  server)
+    bash "$here/server/run.sh" || server_status=1
+    ;;
+  install)
+    bash "$here/install/run.sh" || install_status=1
     ;;
   prepush)
     bash "$here/prepush/run.sh" || prepush_status=1
@@ -69,7 +81,8 @@ case "$target" in
 esac
 
 echo
-if [ "$lua_status" -eq 0 ] && [ "$hook_status" -eq 0 ] && [ "$prepush_status" -eq 0 ]; then
+if [ "$lua_status" -eq 0 ] && [ "$hook_status" -eq 0 ] && [ "$server_status" -eq 0 ] \
+  && [ "$install_status" -eq 0 ] && [ "$prepush_status" -eq 0 ]; then
   printf '\033[32mAll tests passed.\033[0m\n'
   exit 0
 fi

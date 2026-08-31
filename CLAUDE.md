@@ -10,9 +10,10 @@ This configuration has a test suite. Every change needs a test.
 3. Never weaken a test to make it pass. If a test fails, either the code is
    wrong or the test states the wrong thing. Decide which, then say so.
 
-    tests/run.sh                        # everything, about a minute
+    tests/run.sh                        # everything, about three minutes
     tests/run.sh lua                    # the Neovim specs only
     tests/run.sh hook                   # the Claude hook script tests only
+    tests/run.sh server                 # the Flow review server tests only
     tests/run.sh prepush                # the git pre-push hook tests only
     tests/run.sh spec/panel_spec.lua    # one spec file
 
@@ -33,6 +34,9 @@ connection. Use the existing seams:
   would otherwise reach GitHub.
 - `helpers.stub_input` and `helpers.capture_notify` for anything that would
   block on you.
+- `helpers.stub_flow_spawn(job, result)` or `helpers.stub_flow_job(job, answer)`
+  for anything in `flow` that would start a Claude session, and
+  `helpers.flow_root(store)` so a spec never writes into your real plans.
 
 If a new feature needs a seam that does not exist, add the seam to
 `tests/lua/helpers.lua`. Do not reach for the real thing.

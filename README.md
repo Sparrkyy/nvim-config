@@ -1,19 +1,41 @@
 # Neovim configuration
 
 A Cursor-style setup: native LSP, treesitter, telescope, and Claude Code in a
-side split with diff review.
+side split with diff review. Everything that is not a plugin is in here — the
+colourscheme, the Claude Code bridge, the planning tool, and the tests.
+
+## Install
+
+    git clone https://github.com/Sparrkyy/nvim-config.git ~/.config/nvim
+    cd ~/.config/nvim && ./install.sh
+    nvim
+
+`install.sh` points git at `.githooks`, links the Claude Code hook into
+`~/.claude/hooks/`, and registers it in your `~/.claude/settings.json`. It backs
+that file up first and only ever touches entries that name `nvim-follow.sh`.
+Run `./install.sh --dry-run` to see what it would do, or `--uninstall` to take
+it back out. lazy.nvim installs the plugins on the first `nvim`.
+
+It works without `claude`, `jq`, or `node`; the install script tells you which
+features stay quiet.
+
+Already have a config? `mv ~/.config/nvim ~/.config/nvim.before` first.
 
 ## Layout
 
     init.lua
+    install.sh     sets a machine up
     colors/        the colourscheme entry point
+    claude/        the Claude Code hook, and how to register it
     lua/config/    options, keymaps, autocmds, lazy.nvim bootstrap, sync
     lua/ghostty/   the colourscheme: palette and highlight groups
     lua/plugins/   one file per area
     lua/claude/    follow mode, panels, prompt context
+    lua/flow/      plan a change, review it, apply it step by step
     tests/         the test suite
 
-The leader key is `<space>`.
+The leader key is `<space>`. Nothing outside this repository is needed except
+the plugins lazy.nvim fetches.
 
 ## Claude Code
 
@@ -62,9 +84,11 @@ Follow mode never takes focus. It stays quiet while you are in insert mode and
 while a diff is under review.
 
 The Lua side is `lua/claude/follow.lua`. The hook script is
-`~/.claude/hooks/nvim-follow.sh`. Each Neovim instance registers its RPC
-address under `~/.cache/nvim/claude-follow/<cwd-hash>/<pid>.server`, so several
-editors can share one project.
+`claude/nvim-follow.sh` in this repository, which `install.sh` links into
+`~/.claude/hooks/`. `claude/README.md` explains the bridge and lists every event
+it listens for. Each Neovim instance registers its RPC address under
+`~/.cache/nvim/claude-follow/<cwd-hash>/<pid>.server`, so several editors can
+share one project.
 
 To debug, run Claude with `CLAUDE_NVIM_FOLLOW_DEBUG=1`. Every hook invocation
 is then appended to `$TMPDIR/nvim-follow.log`.
@@ -205,6 +229,82 @@ that file exists and is executable. Delete the file to switch it off.
 
 For this project the check runs `tsc --noEmit` over the backend and frontend.
 
+## Flow
+
+Flow plans a change with Claude, lets you review the plan as a design document
+in your browser, and then applies it one small change at a time, in Neovim.
+
+Press `<leader>dn` and say what you want. Three things happen.
+
+1. A background Claude session runs in plan mode and writes a design document.
+   The window in the top right shows its progress. Keep working while it thinks.
+2. The document opens in your browser. It has diagrams, and it is written in
+   Simplified Technical English. Select any text and leave a comment on it.
+   **Replan** sends every open comment back to Claude and writes a new revision.
+   **Accept** turns the plan into a stack of changes.
+3. Back in Neovim, `<leader>dj` opens the first file, puts the cursor on the
+   line that changes, and draws the change around it. Nothing is written yet.
+   `<CR>` applies it and opens the next one. Keep pressing `<CR>`.
+
+### The keys
+
+| Key | Does |
+| --- | ---- |
+| `<leader>dn` | Plan a change |
+| `<leader>dp` | Open the plan in the browser |
+| `<leader>dv` | View the plan in a split, without the browser |
+| `<leader>dl` | Every plan in this directory, past and present |
+| `<leader>dj`, `]f` | Apply the next change |
+| `<leader>dk`, `[f` | Look at the change before this one |
+| `<leader>dr` | Revise the change in front of you |
+| `<leader>dR` | Revise the whole plan |
+| `<leader>du` | Undo the last applied change |
+| `<leader>ds` | Toggle the stack panel |
+
+While a change is on screen: `<CR>` apply and go on, `r` revise, `s` skip,
+`q` dismiss. `<CR>` opens the next change as soon as it writes this one, so one
+key walks the whole stack.
+
+Commands: `:FlowPlan`, `:FlowOpen`, `:FlowShow`, `:FlowNext`, `:FlowPrev`,
+`:FlowStack`, `:FlowPlans`, `:FlowAbandon`.
+
+### How it stays correct
+
+Flow builds the next ten diffs while you work, so a step is ready the moment you
+reach it. Three rules keep that safe.
+
+1. **It waits on the file.** Flow never builds a step while an earlier step
+   changes the same file. That earlier step is about to move the ground the
+   model would read. The panel marks those steps `⋯` until they unblock.
+2. **It checks the file, not a counter.** Each diff records the generation of
+   the file it was built against, and applying or undoing raises that
+   generation. Before Flow shows you a change it also reads the file and
+   confirms every `old_string` is still there. A counter cannot see an edit you
+   made yourself.
+3. **It gives up.** If a rebuilt change still does not fit after two tries, Flow
+   stops, marks the step, and asks you to press `<leader>dr`. The same wrong
+   answer costs the same money every time.
+
+Flow never guesses at a position. It refuses an edit whose `old_string` is not
+in the file. It also refuses an empty `old_string` on a file that already has
+content: an empty `old_string` means "this is the whole file", so on a real file
+it would add a second copy of everything.
+
+### What is on disk
+
+Everything, under `~/.local/state/nvim/flow/<directory>/<plan>/`: the document
+and every revision of it, every comment with the text it points at, the ordered
+steps, the diffs, and an undo journal that holds each file exactly as it was.
+Nothing is deleted. `<leader>dl` opens any of it again.
+
+`<leader>dR` does not roll changes back. It tells the next revision which steps
+are already applied, and plans from there.
+
+### Needs
+
+`node`, for the review server, and the `claude` binary. `:checkhealth flow`
+checks both, and reports where the state lives.
+
 ## Find
 
 | Key          | Action                    |
@@ -264,6 +364,14 @@ into `lua/ghostty/palette.lua`. `:Reload` picks up a colour edit at once.
 works like alt-tab: a normal visit puts the buffer on top, and a walk only
 moves the cursor through the list.
 
+### Autosave
+
+Leaving a buffer writes it to disk. Claude Code reads files from disk, so an
+unsaved buffer hides your latest edit from the agent. The write is quiet. A
+scratch buffer, a terminal, and a read-only buffer stay untouched.
+
+The code is `lua/config/autosave.lua`.
+
 ### The session
 
 Each directory keeps its own session. Start `nvim` there with no file
@@ -279,16 +387,23 @@ The code is `lua/config/session.lua` and `lua/config/bufstack.lua`.
 
 ## Tests
 
-Run `tests/run.sh` before you commit. It runs 389 tests in about two minutes.
+Run `tests/run.sh` before you commit. It runs 618 tests in about four minutes.
 The pre-push hook runs it for you. See "Two machines".
 
     tests/run.sh              everything
     tests/run.sh lua          the Neovim specs only
     tests/run.sh hook         the Claude hook script tests only
+    tests/run.sh server       the Flow review server tests only
+    tests/run.sh install      the setup script tests only
     tests/run.sh prepush      the git pre-push hook tests only
 
 Nothing in the suite starts Claude, reaches the network, or spends a token.
-The Claude terminal, the hook script, and the RPC calls are all mocked.
+The Claude terminal, the hook script, and the RPC calls are all mocked, and the
+setup tests run against a throwaway `HOME`.
+
+It passes on a fresh clone, before you install anything: the hook tests run
+against `claude/nvim-follow.sh` in the repository, not against the copy in
+`~/.claude/`.
 
 **Add a test with every change.** `tests/README.md` explains the layout, the
 mocks, and how to write a new spec.
@@ -296,8 +411,8 @@ mocks, and how to write a new spec.
 ## Reloading
 
 `:Reload`, or `<leader>R`, re-reads the configuration without a restart. It
-drops every `config.*` and `claude.*` module and re-runs them in the order
-`init.lua` uses.
+drops every `config.*`, `claude.*`, and `flow.*` module and re-runs them in the
+order `init.lua` uses.
 
 It does **not** reload plugin options. lazy.nvim hands a plugin its `opts` once,
 when the plugin loads, so a change to a `lua/plugins/*.lua` spec needs a
@@ -306,7 +421,7 @@ key calls, not the list of keys.
 
 | Change | `:Reload` picks it up? |
 | ------ | ---------------------- |
-| `lua/claude/*.lua` | Yes |
+| `lua/claude/*.lua`, `lua/flow/*.lua` | Yes |
 | `lua/config/options.lua`, `keymaps.lua`, `autocmds.lua` | Yes |
 | `lua/ghostty/*.lua`, the colours | Yes |
 | A plugin's `opts`, or a new `keys` entry | No, restart |
@@ -315,34 +430,23 @@ A module with a syntax error is named in the message, and the rest still load.
 
 ## Two machines
 
-This configuration is a private GitHub repository:
-[Sparrkyy/nvim-config](https://github.com/Sparrkyy/nvim-config). It runs on the
-personal machine and the work machine, and each one pulls the other's commits.
-
-### Set up the second machine
-
-    gh auth login
-    mv ~/.config/nvim ~/.config/nvim.before
-    git clone https://github.com/Sparrkyy/nvim-config.git ~/.config/nvim
-    git -C ~/.config/nvim config core.hooksPath .githooks
-    nvim
-
-lazy.nvim installs the plugins on the first start. `lazy-lock.json` is in the
-repository, so both machines run the same plugin versions.
+This configuration runs on more than one machine, and each pulls the other's
+commits. Because the Claude hook is a symlink into this repository, a `git pull`
+updates it too — there is nothing to install twice.
 
 ### Staying in step
 
-Neovim checks GitHub two seconds after startup. The fetch runs in the
+Neovim checks the remote two seconds after startup. The fetch runs in the
 background and nothing blocks. If the branch holds commits you do not have, a
 notification says how many.
 
 | Command | Action |
 | ------- | ------ |
-| `:ConfigUpdate`, `<leader>u` | Fast-forward to the GitHub branch |
-| `:ConfigCheck` | Ask GitHub now, and report either way |
+| `:ConfigUpdate`, `<leader>u` | Fast-forward to the remote branch |
+| `:ConfigCheck` | Ask now, and report either way |
 
-The pull is never automatic. A broken commit from the other machine would
-break the editor you are sitting in, so you choose the moment.
+The pull is never automatic. A broken commit from the other machine would break
+the editor you are sitting in, so you choose the moment.
 
 `:ConfigUpdate` refuses to run over uncommitted changes, and it only
 fast-forwards. Diverged history is yours to sort out with git. After a pull,
@@ -351,22 +455,19 @@ fast-forwards. Diverged history is yours to sort out with git. After a pull,
 The startup check is silent when it fails. No network and no remote both leave
 you with a working editor and no message. Use `:ConfigCheck` to see the reason.
 
+**If you forked this**, point the remote at your own repository first:
+
+    git remote set-url origin https://github.com/<you>/nvim-config.git
+
+Otherwise `<leader>u` fast-forwards you onto someone else's commits.
+
 ### Pushing your changes
 
-    cd ~/.config/nvim
     git add -A && git commit -m "..." && git push
 
-`.githooks/pre-push` runs the whole suite before the push leaves the machine.
-A failing suite stops the push, so a broken commit never reaches the other
-machine. To push anyway, use `git push --no-verify`.
-
-Git finds the hook through `core.hooksPath`, which is local to each clone.
-Set it once per machine:
-
-    git -C ~/.config/nvim config core.hooksPath .githooks
-
-The update check is `lua/config/update.lua`, with `tests/spec/update_spec.lua`.
-The pre-push hook is `.githooks/pre-push`, with `tests/prepush/run.sh`.
+`.githooks/pre-push` runs the whole test suite first. It refuses the push when
+anything fails. Never use `--no-verify` to get past a failing test: decide
+whether the code or the test is wrong, then fix that.
 
 ## Maintenance
 

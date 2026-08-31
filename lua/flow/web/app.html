@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flow — plan review</title>
+<style>
+:root {
+  --bg: #fbfaf8; --panel: #ffffff; --ink: #1c1b19; --muted: #6b6862;
+  --line: #e3e0da; --accent: #7c5cff; --accent-soft: #efeaff;
+  --ok: #2f7d4f; --warn: #a8650c; --code-bg: #f3f1ec;
+  --doc: 46rem; --gutter: 20rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16151a; --panel: #1d1c22; --ink: #e6e3dd; --muted: #97938c;
+    --line: #302e38; --accent: #a892ff; --accent-soft: #2a2440;
+    --ok: #6cc08a; --warn: #d9a441; --code-bg: #24222b;
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.7 ui-serif, Georgia, "Iowan Old Style", serif;
+  -webkit-font-smoothing: antialiased;
+}
+header {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
+  padding: .7rem 1.5rem; background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(12px); border-bottom: 1px solid var(--line);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+header .title { font-weight: 600; font-size: .95rem; margin-right: auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
+header .status { font-size: .7rem; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: .1rem .55rem; }
+select, button {
+  font: inherit; font-size: .82rem; font-family: ui-sans-serif, system-ui, sans-serif;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  border-radius: .45rem; padding: .35rem .7rem; cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .4; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.ghost { background: transparent; }
+
+main { display: grid; grid-template-columns: 1fr var(--gutter); gap: 2rem;
+  max-width: calc(var(--doc) + var(--gutter) + 6rem); margin: 0 auto; padding: 2.5rem 1.5rem 8rem; }
+@media (max-width: 60rem) { main { grid-template-columns: 1fr; } aside { order: -1; } }
+
+#doc { max-width: var(--doc); }
+#doc > * { position: relative; scroll-margin-top: 5rem; }
+#doc h1 { font-size: 2rem; line-height: 1.25; margin: 0 0 1.5rem; letter-spacing: -.01em; }
+#doc h2 { font-size: 1.25rem; margin: 2.75rem 0 .85rem; padding-bottom: .35rem;
+  border-bottom: 1px solid var(--line); letter-spacing: -.005em; }
+#doc h3 { font-size: 1rem; margin: 1.9rem 0 .6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+#doc p, #doc li { font-size: 1.02rem; }
+#doc ul, #doc ol { padding-left: 1.4rem; }
+#doc li { margin: .3rem 0; }
+#doc blockquote { margin: 1rem 0; padding: .1rem 1rem; border-left: 3px solid var(--accent);
+  color: var(--muted); }
+#doc code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .86em;
+  background: var(--code-bg); padding: .1em .35em; border-radius: .25rem; }
+#doc pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: .5rem;
+  padding: .9rem 1rem; overflow-x: auto; }
+#doc pre code { background: none; padding: 0; font-size: .82rem; line-height: 1.55; }
+#doc table { border-collapse: collapse; width: 100%; font-size: .92rem; display: block; overflow-x: auto; }
+#doc th, #doc td { border: 1px solid var(--line); padding: .4rem .6rem; text-align: left; }
+#doc th { background: var(--code-bg); font-weight: 600; }
+#doc pre.mermaid { background: var(--panel); text-align: center; }
+#doc .commented { background: var(--accent-soft); border-radius: .3rem;
+  box-shadow: -.6rem 0 0 0 var(--accent-soft), .6rem 0 0 0 var(--accent-soft); }
+
+aside { position: relative; font-family: ui-sans-serif, system-ui, sans-serif; }
+.card { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: .5rem; padding: .7rem .8rem; margin-bottom: .7rem; font-size: .85rem; }
+.card.done { border-left-color: var(--ok); opacity: .55; }
+.card .quote { color: var(--muted); font-style: italic; font-size: .78rem;
+  border-left: 2px solid var(--line); padding-left: .5rem; margin-bottom: .4rem;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.card .body { white-space: pre-wrap; }
+.card .foot { display: flex; gap: .5rem; align-items: center; margin-top: .5rem;
+  font-size: .72rem; color: var(--muted); }
+.card .foot button { padding: .1rem .4rem; font-size: .72rem; }
+.empty { color: var(--muted); font-size: .85rem; padding: .5rem 0; }
+
+#tip { position: absolute; z-index: 30; display: none; }
+#tip button { box-shadow: 0 4px 14px rgba(0,0,0,.18); }
+#composer { position: absolute; z-index: 31; display: none; width: 20rem;
+  background: var(--panel); border: 1px solid var(--line); border-radius: .6rem;
+  padding: .7rem; box-shadow: 0 8px 30px rgba(0,0,0,.2);
+  font-family: ui-sans-serif, system-ui, sans-serif; }
+#composer textarea { width: 100%; min-height: 5rem; resize: vertical; font: inherit;
+  font-size: .85rem; background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line); border-radius: .4rem; padding: .5rem; }
+#composer .row { display: flex; gap: .5rem; justify-content: flex-end; margin-top: .5rem; }
+#toast { position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%);
+  background: var(--ink); color: var(--bg); padding: .5rem 1rem; border-radius: .5rem;
+  font-family: ui-sans-serif, system-ui, sans-serif; font-size: .85rem; display: none; z-index: 40; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="title" id="title">Loading…</span>
+  <span class="status" id="status"></span>
+  <select id="revsel" title="Revision"></select>
+  <button class="ghost" id="refresh">Refresh</button>
+  <button id="replan" disabled>Replan</button>
+  <button class="primary" id="accept">Accept</button>
+</header>
+
+<main>
+  <article id="doc"></article>
+  <aside id="gutter"></aside>
+</main>
+
+<div id="tip"><button class="primary">Comment</button></div>
+<div id="composer">
+  <textarea id="ctext" placeholder="What should change?"></textarea>
+  <div class="row">
+    <button class="ghost" id="ccancel">Cancel</button>
+    <button class="primary" id="csave">Add comment</button>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/14.1.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.0/mermaid.min.js"></script>
+<script>
+"use strict";
+
+const parts = location.pathname.split("/").filter(Boolean);
+const PLAN = parts[1] || "";
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const API = "/api/plan/" + PLAN;
+
+let state = { meta: {}, revision: null, revisions: [], comments: [] };
+let viewing = null;   // the revision number on screen
+let pending = null;   // the selection a new comment attaches to
+
+const $ = (id) => document.getElementById(id);
+
+function toast(text) {
+  const el = $("toast");
+  el.textContent = text;
+  el.style.display = "block";
+  clearTimeout(el._t);
+  el._t = setTimeout(() => (el.style.display = "none"), 2600);
+}
+
+function api(path, opts) {
+  const join = path.includes("?") ? "&" : "?";
+  return fetch(API + path + join + "token=" + TOKEN, opts).then(async (r) => {
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    return data;
+  });
+}
+
+// --- rendering --------------------------------------------------------------
+
+function slug(text) {
+  return text.toLowerCase().replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
+}
+
+// Give every top-level block a stable name, so a comment can point at it.
+// The name is the enclosing heading plus the block's place under it.
+function anchorBlocks(root) {
+  let section = "top";
+  let index = 0;
+  for (const el of root.children) {
+    if (/^H[1-3]$/.test(el.tagName)) {
+      section = slug(el.textContent) || "section";
+      index = 0;
+    }
+    el.dataset.anchor = section + "#" + index;
+    el.dataset.section = section;
+    index += 1;
+  }
+}
+
+function renderDoc(markdown) {
+  const doc = $("doc");
+  doc.innerHTML = marked.parse(markdown || "*This plan has no document yet.*");
+
+  // marked turns a mermaid fence into <pre><code class="language-mermaid">.
+  // mermaid wants <pre class="mermaid"> holding the raw text.
+  doc.querySelectorAll("pre > code.language-mermaid").forEach((code) => {
+    const pre = document.createElement("pre");
+    pre.className = "mermaid";
+    pre.textContent = code.textContent;
+    code.parentElement.replaceWith(pre);
+  });
+
+  anchorBlocks(doc);
+
+  if (doc.querySelector("pre.mermaid")) {
+    mermaid.run({ querySelector: "pre.mermaid" }).catch(() => {
+      toast("A diagram would not render.");
+    });
+  }
+}
+
+function isOpen(c) {
+  return c.addressed_in === null || c.addressed_in === undefined;
+}
+
+function renderGutter() {
+  const gutter = $("gutter");
+  gutter.innerHTML = "";
+
+  const mine = state.comments.filter((c) => Number(c.revision) === Number(viewing) || isOpen(c));
+  if (!mine.length) {
+    gutter.innerHTML = '<p class="empty">Select any text in the document to leave a comment.</p>';
+  }
+
+  // Highlight what is commented on, and line each card up with its block.
+  $("doc").querySelectorAll(".commented").forEach((el) => el.classList.remove("commented"));
+  const top = gutter.getBoundingClientRect().top + window.scrollY;
+  let last = 0;
+
+  for (const c of mine) {
+    const target = $("doc").querySelector('[data-anchor="' + CSS.escape(c.anchor || "") + '"]');
+    if (target) target.classList.add("commented");
+
+    const card = document.createElement("div");
+    card.className = "card" + (isOpen(c) ? "" : " done");
+    card.innerHTML =
+      (c.quote ? '<div class="quote"></div>' : "") +
+      '<div class="body"></div>' +
+      '<div class="foot"><span class="tag"></span></div>';
+    if (c.quote) card.querySelector(".quote").textContent = c.quote;
+    card.querySelector(".body").textContent = c.body;
+    card.querySelector(".tag").textContent = isOpen(c)
+      ? "open · " + (c.anchor || "").split("#")[0]
+      : "answered in revision " + c.addressed_in;
+
+    if (isOpen(c)) {
+      const del = document.createElement("button");
+      del.className = "ghost";
+      del.textContent = "Delete";
+      del.onclick = () =>
+        api("/comment/" + c.id, { method: "DELETE" }).then(load).catch((e) => toast(e.message));
+      card.querySelector(".foot").appendChild(del);
+    }
+
+    gutter.appendChild(card);
+
+    // Nudge the card down to its block, but never on top of the one above.
+    if (target) {
+      const want = target.getBoundingClientRect().top + window.scrollY - top;
+      const y = Math.max(last, want);
+      card.style.marginTop = Math.max(0, y - card.offsetTop) + "px";
+      last = card.offsetTop + card.offsetHeight + 8;
+    }
+  }
+}
+
+function renderHeader() {
+  $("title").textContent = state.meta.title || "Plan";
+  $("status").textContent = state.meta.status || "";
+
+  const sel = $("revsel");
+  sel.innerHTML = "";
+  for (const r of state.revisions) {
+    const o = document.createElement("option");
+    o.value = r.n;
+    o.textContent = "Revision " + r.n;
+    if (Number(r.n) === Number(viewing)) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.style.display = state.revisions.length > 1 ? "" : "none";
+
+  const open = state.comments.filter(isOpen).length;
+  $("replan").disabled = open === 0 || state.meta.status === "planning";
+  $("replan").textContent = open ? "Replan (" + open + ")" : "Replan";
+  $("accept").disabled = state.meta.status === "planning" || !state.revision;
+}
+
+function load(rev) {
+  const q = rev ? "?revision=" + rev : "";
+  return api(q)
+    .then((data) => {
+      state = data;
+      viewing = data.revision ? data.revision.n : 0;
+      renderDoc(data.revision && data.revision.plan_md);
+      renderHeader();
+      renderGutter();
+    })
+    .catch((e) => toast(e.message));
+}
+
+// --- commenting -------------------------------------------------------------
+
+function hidePopups() {
+  $("tip").style.display = "none";
+  $("composer").style.display = "none";
+}
+
+// Put a popup near the selection, and keep every edge on screen. A selection
+// at the bottom of the window would otherwise put the button below the fold.
+function place(el, box) {
+  el.style.visibility = "hidden";
+  el.style.display = "block";
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+  const gap = 8;
+
+  let top = box.bottom + gap;
+  if (top + h > window.innerHeight - gap) {
+    // No room under the selection. Go above it, or pin it to the top.
+    top = box.top - h - gap;
+    if (top < gap) top = Math.max(gap, window.innerHeight - h - gap);
+  }
+  const left = Math.max(gap, Math.min(box.left, window.innerWidth - w - gap));
+
+  el.style.top = top + window.scrollY + "px";
+  el.style.left = left + window.scrollX + "px";
+  el.style.visibility = "";
+}
+
+// Remember where the selection was, so the composer opens where the tip did.
+let anchorBox = null;
+
+// Offer the button whenever the selection settles, however it was made. A
+// mouseup listener alone misses a selection made with shift and the arrows.
+let settle = null;
+
+function onSelection() {
+  // The composer holds the selection while you type in it.
+  if ($("composer").style.display === "block") return;
+
+  const sel = window.getSelection();
+  const text = sel && sel.toString().trim();
+  if (!text || !sel.rangeCount) return hidePopups();
+
+  // Anchor to the block the selection STARTS in. The common ancestor is #doc
+  // itself as soon as the selection spans a block boundary, and #doc carries
+  // no anchor of its own.
+  const range = sel.getRangeAt(0);
+  let node = range.startContainer;
+  if (node.nodeType === 3) node = node.parentElement;
+  const block = node && node.closest && node.closest("#doc > [data-anchor]");
+  if (!block) return hidePopups();
+
+  pending = { anchor: block.dataset.anchor, quote: text.slice(0, 2000) };
+  anchorBox = range.getBoundingClientRect();
+  place($("tip"), anchorBox);
+}
+
+document.addEventListener("selectionchange", () => {
+  clearTimeout(settle);
+  settle = setTimeout(onSelection, 180);
+});
+
+$("tip").querySelector("button").onclick = () => {
+  $("tip").style.display = "none";
+  $("ctext").value = "";
+  place($("composer"), anchorBox || { top: 100, bottom: 100, left: 100 });
+  $("ctext").focus();
+};
+
+$("ccancel").onclick = hidePopups;
+
+$("csave").onclick = () => {
+  const body = $("ctext").value.trim();
+  if (!body || !pending) return;
+  api("/comment", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...pending, body, revision: viewing }),
+  })
+    .then(() => {
+      hidePopups();
+      window.getSelection().removeAllRanges();
+      return load(viewing);
+    })
+    .catch((e) => toast(e.message));
+};
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") hidePopups();
+  if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey) && $("composer").style.display === "block") {
+    $("csave").click();
+  }
+});
+
+// --- actions ----------------------------------------------------------------
+
+$("refresh").onclick = () => load(viewing);
+$("revsel").onchange = (ev) => load(ev.target.value);
+
+$("replan").onclick = () => {
+  $("replan").disabled = true;
+  api("/replan", { method: "POST" })
+    .then(() => toast("Claude is revising the plan. This page refreshes when it lands."))
+    .catch((e) => toast(e.message));
+};
+
+$("accept").onclick = () => {
+  $("accept").disabled = true;
+  api("/accept", { method: "POST" })
+    .then(() => toast("Plan accepted. Go back to Neovim — the change stack is building."))
+    .catch((e) => {
+      $("accept").disabled = false;
+      toast(e.message);
+    });
+};
+
+// --- start ------------------------------------------------------------------
+
+mermaid.initialize({
+  startOnLoad: false,
+  securityLevel: "strict",
+  theme: window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "neutral",
+  fontFamily: "ui-sans-serif, system-ui, sans-serif",
+});
+
+load();
+
+// A replan or an accept changes the state from outside this page. Poll gently
+// so the page keeps up without a socket.
+setInterval(() => {
+  api("").then((data) => {
+    const changed =
+      data.meta.current_revision !== state.meta.current_revision ||
+      data.meta.status !== state.meta.status ||
+      data.comments.length !== state.comments.length;
+    if (changed) load();
+  }).catch(() => {});
+}, 4000);
+
+window.addEventListener("resize", () => renderGutter());
+</script>
+</body>
+</html>

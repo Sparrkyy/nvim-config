@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tests for ~/.claude/hooks/nvim-follow.sh.
+# Tests for claude/nvim-follow.sh, the Claude Code hook this repository ships.
 #
 # Everything outside the script is faked:
 #   - a mock `nvim` on PATH records the RPC calls instead of driving an editor
@@ -9,8 +9,10 @@
 
 set -uo pipefail
 
-HOOK="${HOOK:-$HOME/.claude/hooks/nvim-follow.sh}"
 here=$(cd "$(dirname "$0")" && pwd)
+# The copy in this repository, not the installed one. A fresh clone must be able
+# to run the whole suite before install.sh has put anything anywhere.
+HOOK="${HOOK:-$(dirname "$(dirname "$here")")/claude/nvim-follow.sh}"
 
 pass=0
 fail=0

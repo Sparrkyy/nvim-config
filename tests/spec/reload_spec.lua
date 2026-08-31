@@ -107,6 +107,46 @@ describe("reload", function()
     assert.equals(0, require("claude.follow").queue_length())
   end)
 
+  it("re-registers the flow commands, so :FlowPlan survives a reload", function()
+    reload.reload()
+    assert.is_truthy(vim.api.nvim_get_commands({})["FlowPlan"])
+    assert.is_truthy(vim.api.nvim_get_commands({})["FlowNext"])
+  end)
+
+  it("drops the flow modules too", function()
+    require("flow.store")
+    require("flow.ui")
+    local names = reload.reload()
+    assert.is_true(vim.tbl_contains(names, "flow.store"))
+    assert.is_true(vim.tbl_contains(names, "flow.ui"))
+    assert.is_true(vim.tbl_contains(names, "flow"))
+  end)
+
+  it("takes down a flow preview before its module disappears", function()
+    local dir = H.tmpdir()
+    local file = H.write_file(dir, "sample.lua", { "local x = 1", "return x" })
+    local ui = require("flow.ui")
+    H.capture_notify(function()
+      ui.preview({
+        file = file,
+        edits = { { old_string = "local x = 1", new_string = "local x = 2" } },
+        rationale = "Change it.",
+        title = "Change it",
+      })
+    end)
+    local buf = vim.api.nvim_get_current_buf()
+    assert.is_true(ui.is_open())
+
+    reload.reload()
+
+    -- The extmarks and the buffer-local keys go with it.
+    local ns = require("flow.ui").ns
+    assert.equals(0, #vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, {}))
+    for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+      assert.is_not.equal("r", m.lhs)
+    end
+  end)
+
   it("reports a module that will not load, instead of throwing", function()
     package.loaded["config.options"] = nil
     package.preload["config.options"] = function()

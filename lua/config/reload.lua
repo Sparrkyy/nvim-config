@@ -1,6 +1,6 @@
 -- Reload the configuration without leaving Neovim.
 --
--- It drops every `config.*`, `claude.*`, and `ghostty.*` module from the Lua
+-- It drops every `config.*`, `claude.*`, `flow.*`, and `ghostty.*` module from the Lua
 -- cache, then re-runs them in the order init.lua uses. Two modules are never
 -- dropped:
 --   config.lazy    lazy.setup() must run once per session
@@ -11,12 +11,12 @@
 
 local M = {}
 
-local PATTERNS = { "^config%.", "^claude%.", "^ghostty$", "^ghostty%." }
+local PATTERNS = { "^config%.", "^claude%.", "^ghostty$", "^ghostty%.", "^flow$", "^flow%." }
 local KEEP = { ["config.lazy"] = true, ["config.reload"] = true }
 
 -- The modules init.lua requires, in its order.
 local PLAIN = { "config.options", "config.keymaps", "config.autocmds" }
-local WITH_SETUP = { "config.bufstack", "config.session", "config.newfile", "claude.follow", "config.update" }
+local WITH_SETUP = { "config.bufstack", "config.session", "config.newfile", "claude.follow", "config.update", "flow" }
 
 local function reloadable(name)
   if KEEP[name] then
@@ -30,15 +30,24 @@ local function reloadable(name)
   return false
 end
 
---- Let follow mode let go of the editor before its module disappears.
+--- Let the modules that hold on to the editor let go, before they disappear.
+--- An extmark or a buffer-local keymap outlives its module otherwise.
 local function release_state()
-  local ok, follow = pcall(require, "claude.follow")
-  if not ok then
-    return
+  local follow_ok, follow = pcall(require, "claude.follow")
+  if follow_ok then
+    pcall(follow.clear_queue)
+    pcall(follow.clear_marks)
+    pcall(follow.unregister)
   end
-  pcall(follow.clear_queue)
-  pcall(follow.clear_marks)
-  pcall(follow.unregister)
+
+  local flow_ok, flow_ui = pcall(require, "flow.ui")
+  if flow_ok then
+    pcall(flow_ui.clear)
+  end
+  local stack_ok, stack = pcall(require, "flow.stack")
+  if stack_ok then
+    pcall(stack.reset)
+  end
 end
 
 --- Drop and re-run the configuration.
@@ -102,8 +111,11 @@ function M.run()
     return
   end
 
-  vim.notify(string.format("Reloaded %d modules. Plugin options need a restart.", #cleared),
-    vim.log.levels.INFO, { title = "Reload" })
+  vim.notify(
+    string.format("Reloaded %d modules. Plugin options need a restart.", #cleared),
+    vim.log.levels.INFO,
+    { title = "Reload" }
+  )
 end
 
 function M.setup()

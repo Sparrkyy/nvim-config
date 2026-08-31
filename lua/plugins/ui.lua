@@ -31,6 +31,7 @@ return {
       preset = "helix",
       spec = {
         { "<leader>a", group = "AI / Claude" },
+        { "<leader>d", group = "flow: plan & apply" },
         { "<leader>f", group = "find / format" },
         { "<leader>g", group = "git" },
         { "<leader>u", group = "toggle" },
