@@ -145,6 +145,25 @@ describe("session", function()
     end)
   end)
 
+  -- A buffer read inside an autocmd is a nested event. Neovim then skips
+  -- filetype detection, so the LSP and treesitter never start on the file.
+  it("restores after VimEnter returns, not inside it", function()
+    local a = H.write_file(dir, "a.lua", { "a" })
+    open(a)
+    session.save(vim.fn.getcwd())
+
+    H.reset_buffers()
+    session.setup()
+    vim.api.nvim_exec_autocmds("VimEnter", {})
+    assert.is_not.equal(a, H.current_file())
+
+    vim.wait(1000, function()
+      return H.current_file() == a
+    end)
+    assert.equals(a, H.current_file())
+    vim.api.nvim_del_augroup_by_name("EthanSession")
+  end)
+
   it("skips an unnamed buffer, because it holds no file", function()
     open(H.write_file(dir, "a.lua", { "a" }))
     vim.cmd("enew")

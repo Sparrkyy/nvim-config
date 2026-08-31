@@ -19,15 +19,18 @@ map("n", "<C-l>", "<C-w>l", { desc = "Window right" })
 -- Leave terminal insert mode.
 map("t", "<C-x>", [[<C-\><C-n>]], { desc = "Terminal normal mode" })
 
--- Move the selected lines.
-map("v", "J", ":m '>+1<cr>gv=gv", { desc = "Move selection down" })
-map("v", "K", ":m '<-2<cr>gv=gv", { desc = "Move selection up" })
-
 -- Keep the cursor centred.
 map("n", "<C-d>", "<C-d>zz")
 map("n", "<C-u>", "<C-u>zz")
 map("n", "n", "nzzzv")
 map("n", "N", "Nzzzv")
+
+-- Toggle a comment on the selection or the line. gc and gcc still work.
+-- Ctrl+/ arrives as <C-_> in most terminals.
+map("x", "<leader>/", "gc", { remap = true, desc = "Toggle comment" })
+map("n", "<leader>/", "gcc", { remap = true, desc = "Toggle comment" })
+map("x", "<C-_>", "gc", { remap = true, desc = "Toggle comment" })
+map("n", "<C-_>", "gcc", { remap = true, desc = "Toggle comment" })
 
 -- Paste over a selection without losing the register.
 map("x", "<leader>p", [["_dP]], { desc = "Paste (keep register)" })

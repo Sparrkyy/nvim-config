@@ -114,12 +114,16 @@ function M.setup()
     end,
   })
 
+  -- The restore runs after VimEnter returns. A buffer read inside an autocmd
+  -- is a nested event, and Neovim then skips filetype detection, so the LSP
+  -- and treesitter never start on the restored file.
   vim.api.nvim_create_autocmd("VimEnter", {
     group = group,
-    nested = true,
     callback = function()
       if not started_empty() then return end
-      pcall(M.restore)
+      vim.schedule(function()
+        pcall(M.restore)
+      end)
     end,
   })
 

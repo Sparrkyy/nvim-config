@@ -49,3 +49,6 @@ vim.api.nvim_create_autocmd("FileType", {
     vim.opt_local.shiftwidth = 2
   end,
 })
+
+-- Write a file buffer to disk when you leave it.
+require("config.autosave").setup(aug)

@@ -169,6 +169,53 @@ describe("bufstack", function()
     assert.is_false(bufstack.restore(nil, 1))
   end)
 
+  -- `nvim_set_current_buf` reads an unloaded buffer with no BufReadPre and no
+  -- FileType, so the LSP and treesitter never start on a restored file.
+  it("fires the file-read events for a restored buffer", function()
+    local a = H.write_file(dir, "a.lua", { "a" })
+    H.reset_buffers()
+
+    local seen = {}
+    local group = vim.api.nvim_create_augroup("BufstackSpecEvents", { clear = true })
+    vim.api.nvim_create_autocmd({ "BufReadPre", "BufReadPost", "FileType" }, {
+      group = group,
+      callback = function(ev)
+        seen[ev.event] = true
+      end,
+    })
+
+    assert.is_true(bufstack.restore({ a }, 1))
+    vim.api.nvim_del_augroup_by_id(group)
+
+    assert.is_true(seen.BufReadPre)
+    assert.is_true(seen.BufReadPost)
+  end)
+
+  it("fires the file-read events for a buffer reached with J", function()
+    local a = H.write_file(dir, "a.lua", { "a" })
+    local b = H.write_file(dir, "b.lua", { "b" })
+    H.reset_buffers()
+
+    -- Only the first file loads on restore. `b` stays unloaded until J.
+    assert.is_true(bufstack.restore({ a, b }, 1))
+
+    local seen = {}
+    local group = vim.api.nvim_create_augroup("BufstackSpecEvents", { clear = true })
+    vim.api.nvim_create_autocmd({ "BufReadPre", "BufReadPost" }, {
+      group = group,
+      callback = function(ev)
+        seen[ev.event] = true
+      end,
+    })
+
+    bufstack.back()
+    vim.api.nvim_del_augroup_by_id(group)
+
+    assert.equals(b, H.current_file())
+    assert.is_true(seen.BufReadPre)
+    assert.is_true(seen.BufReadPost)
+  end)
+
   it("maps J and K in normal mode", function()
     local maps = {}
     for _, m in ipairs(vim.api.nvim_get_keymap("n")) do

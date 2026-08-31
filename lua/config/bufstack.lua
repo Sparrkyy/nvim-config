@@ -51,16 +51,26 @@ local function record(buf)
   idx = 1
 end
 
+-- Switch to `buf`. `nvim_set_current_buf` reads an unloaded buffer without
+-- firing BufReadPre or FileType, so the LSP and treesitter never start on it.
+-- `:buffer` runs the full read, so a restored file gets its filetype.
+local function show(buf)
+  if vim.api.nvim_buf_is_loaded(buf) then
+    return pcall(vim.api.nvim_set_current_buf, buf)
+  end
+  return pcall(vim.cmd, "buffer " .. buf)
+end
+
 -- Step through the list. `step` is 1 for back, and -1 for forward.
 local function go(step)
   prune()
   local target = idx + step
   if target < 1 or target > #stack then return end
   idx = target
-  -- `nvim_set_current_buf` fires BufEnter at once. The flag must wrap that call,
+  -- The switch fires BufEnter at once. The flag must wrap that call,
   -- so `record` skips the jump and the list keeps its order.
   cycling = true
-  local ok, err = pcall(vim.api.nvim_set_current_buf, stack[idx])
+  local ok, err = show(stack[idx])
   cycling = false
   if not ok then
     vim.notify("bufstack: " .. tostring(err), vim.log.levels.WARN)
@@ -115,7 +125,7 @@ function M.restore(files, want)
   idx = math.max(1, math.min(tonumber(want) or 1, #stack))
   -- The jump fires BufEnter. The flag keeps `record` from reordering the list.
   cycling = true
-  local ok = pcall(vim.api.nvim_set_current_buf, stack[idx])
+  local ok = show(stack[idx])
   cycling = false
   return ok
 end
