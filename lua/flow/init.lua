@@ -6,6 +6,10 @@
 --   <leader>dj  review the next finished hunk
 --   <leader>dk  review the previous hunk
 --   <leader>dr  send review feedback to Claude
+--   <leader>dc  comment on the current review line or selection
+--   <leader>dS  submit review edits and comments
+--   <leader>da  approve a clean verified review
+--   <leader>dR  review the current branch against master
 --   <leader>du  restore the checkpoint before the last feedback
 --   <leader>ds  toggle the implementation session
 --   <leader>dm  squash and commit the verified implementation
@@ -36,6 +40,16 @@ local function define_highlights()
     FlowSkipped = { link = "NonText" },
     FlowBorder = { link = "FloatBorder" },
     FlowTitle = { link = "Title" },
+    FlowReviewComment = { link = "DiagnosticInfo" },
+    FlowReviewCommentText = { link = "DiagnosticInfo" },
+    FlowReviewCommentRange = { link = "CursorLine" },
+    FlowReviewAdd = { link = "DiffAdd" },
+    FlowReviewAddMarker = { link = "DiagnosticOk" },
+    FlowReviewDelete = { link = "DiffDelete" },
+    FlowReviewDeleteMarker = { link = "DiagnosticError" },
+    FlowReviewHunkHeader = { link = "DiagnosticInfo" },
+    FlowReviewBinary = { link = "DiagnosticWarn" },
+    FlowReviewSection = { link = "Title" },
   }
   for name, spec in pairs(groups) do
     spec.default = true
@@ -187,20 +201,36 @@ local function commands()
     require("flow.implementation").open()
   end, { desc = "Open the implementation session" })
 
-  cmd("FlowReview", function()
+  cmd("FlowReview", function(a)
+    require("flow.review").open_diff(a.args ~= "" and a.args or "master")
+  end, { nargs = "?", desc = "Review the current branch and worktree against a base" })
+
+  cmd("FlowPlanReview", function()
     require("flow.review").open()
-  end, { desc = "Review the verified implementation" })
+  end, { desc = "Review the verified Flow implementation" })
 
   cmd("FlowFeedback", function(a)
     require("flow.review").feedback(nil, a.args)
   end, { nargs = "?", desc = "Send implementation-review feedback" })
+
+  cmd("FlowComment", function(a)
+    require("flow.review").comment(nil, a.args ~= "" and a.args or nil)
+  end, { nargs = "?", desc = "Comment on the current implementation line" })
+
+  cmd("FlowSubmit", function()
+    require("flow.review").submit()
+  end, { desc = "Submit review edits and comments" })
+
+  cmd("FlowApprove", function()
+    require("flow.review").approve()
+  end, { desc = "Approve a clean verified implementation" })
 
   cmd("FlowRestore", function()
     require("flow.review").restore()
   end, { desc = "Restore the checkpoint before the last feedback" })
 
   cmd("FlowMerge", function()
-    require("flow.merge").squash()
+    require("flow.review").merge()
   end, { desc = "Squash and commit the verified implementation" })
 
   cmd("FlowInterrupt", function()
@@ -238,9 +268,18 @@ local function keymaps()
   map("<leader>dr", function()
     require("flow.review").feedback()
   end, "Flow: send review feedback")
+  map("<leader>dc", function()
+    require("flow.review").comment()
+  end, "Flow: comment on review line")
+  map("<leader>dS", function()
+    require("flow.review").submit()
+  end, "Flow: submit review changes")
+  map("<leader>da", function()
+    require("flow.review").approve()
+  end, "Flow: approve review")
   map("<leader>dR", function()
-    M.open()
-  end, "Flow: reopen the approved plan")
+    require("flow.review").open_diff("master")
+  end, "Flow: review branch against master")
   map("<leader>du", function()
     require("flow.review").restore()
   end, "Flow: restore before feedback")
@@ -248,7 +287,7 @@ local function keymaps()
     require("flow.implementation").toggle()
   end, "Flow: toggle implementation session")
   map("<leader>dm", function()
-    require("flow.merge").squash()
+    require("flow.review").merge()
   end, "Flow: squash and commit")
   map("]f", function()
     require("flow.review").next()

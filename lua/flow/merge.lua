@@ -22,7 +22,7 @@ function M.check(plan_id)
     return nil, "This plan has no verified implementation to merge."
   end
   if meta.status ~= "merge_ready" then
-    return nil, "Review every finished hunk before merging."
+    return nil, "Approve the clean verified review before merging."
   end
 
   local source_clean, source_err = worktree.is_clean(meta.source_root)

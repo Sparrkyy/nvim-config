@@ -13,7 +13,7 @@ has to live outside the repository, because Claude Code looks for its hooks in
 1. Every Neovim writes its RPC address to
    `~/.cache/nvim/claude-follow/<cwd-hash>/<pid>.server` when it starts in a
    directory. Several editors can share one project.
-2. Claude Code runs this script on eleven hook events, passing the payload on
+2. Claude Code runs this script on twelve hook events, passing the payload on
    stdin.
 3. The script reads the working directory out of the payload, finds the address
    registered for it, and sends a base64 JSON message over
@@ -30,6 +30,7 @@ Neovim registered for that directory. A failure here must never block Claude.
 | ----- | -------------------- |
 | `UserPromptSubmit` | Adds your editor state to the prompt |
 | `PreToolUse` | Jumps to the file Claude is about to read or change |
+| `PostToolUse` | Reloads the write and animates additions and deletions |
 | `PostToolUseFailure` | Shows what went wrong |
 | `PermissionRequest` | Asks you in the editor |
 | `TaskCreated`, `TaskCompleted` | Tracks subagents in the job window |

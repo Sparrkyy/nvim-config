@@ -26,6 +26,27 @@ describe("follow pacing", function()
     assert.equals(2, vim.api.nvim_win_get_cursor(0)[1])
   end)
 
+  it("reloads a loaded buffer when the file changes on disk", function()
+    local path = H.write_file(dir, "reload.lua", { "before" })
+    follow.open(path, 1)
+    H.write_file(dir, "reload.lua", { "after", "new line" })
+
+    follow.open(path, 1)
+
+    assert.same({ "after", "new line" }, vim.api.nvim_buf_get_lines(0, 0, -1, false))
+  end)
+
+  it("does not overwrite unsaved buffer changes", function()
+    local path = H.write_file(dir, "modified.lua", { "on disk" })
+    follow.open(path, 1)
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { "my unsaved work" })
+    H.write_file(dir, "modified.lua", { "claude changed disk" })
+
+    follow.open(path, 1)
+
+    assert.same({ "my unsaved work" }, vim.api.nvim_buf_get_lines(0, 0, -1, false))
+  end)
+
   it("queues instead of jumping when pacing is on", function()
     local a = H.write_file(dir, "a.lua", { "one" })
     local b = H.write_file(dir, "b.lua", { "two" })

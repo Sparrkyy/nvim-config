@@ -16,6 +16,16 @@ describe("follow.handle", function()
     dir = H.tmpdir()
   end)
 
+  it("unregisters on exit without treating the autocmd event as a directory", function()
+    follow.setup()
+    local argument = "not called"
+    follow.unregister = function(value)
+      argument = value
+    end
+    vim.api.nvim_exec_autocmds("VimLeavePre", { group = "ClaudeFollow" })
+    assert.is_nil(argument)
+  end)
+
   it("opens the file an edit touches", function()
     local path = H.write_file(dir, "a.lua", { "one", "two", "three" })
     local result = follow.handle(H.encode({
@@ -69,6 +79,67 @@ describe("follow.handle", function()
     H.settle(60)
     local ns = vim.api.nvim_get_namespaces()["claude_changes"]
     assert.equals(0, #vim.api.nvim_buf_get_extmarks(vim.fn.bufnr(path), ns, 0, -1, {}))
+  end)
+
+  it("reloads an edit and keeps removed code visible in red virtual lines", function()
+    local path = H.write_file(dir, "animated.lua", { "keep", "remove me", "tail" })
+    follow.handle(H.encode({
+      kind = "open", event = "PreToolUse", tool = "Edit", write = true,
+      path = path, needle = "remove me",
+    }))
+    H.write_file(dir, "animated.lua", { "keep", "added here", "tail" })
+
+    follow.handle(H.encode({
+      kind = "open", event = "PostToolUse", tool = "Edit", write = true,
+      path = path, added = { "added here" },
+    }))
+
+    local bufnr = vim.fn.bufnr(path)
+    assert.same({ "keep", "added here", "tail" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    local ns = vim.api.nvim_get_namespaces()["claude_changes"]
+    local marks = vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, { details = true })
+    local added = 0
+    local removed
+    for _, mark in ipairs(marks) do
+      if mark[4].line_hl_group == "ClaudeAdded" then
+        added = added + 1
+      elseif mark[4].virt_lines then
+        removed = mark[4].virt_lines[1][1][1]
+      end
+    end
+    assert.equals(1, added)
+    assert.equals("remove me", removed)
+  end)
+
+  it("lingers, fades, and then clears animated changes", function()
+    follow.change_linger_ms = 30
+    follow.change_fade_ms = 90
+    local path = H.write_file(dir, "fade.lua", { "old" })
+    follow.handle(H.encode({
+      kind = "open", event = "PreToolUse", tool = "Edit", write = true,
+      path = path, needle = "old",
+    }))
+    H.write_file(dir, "fade.lua", { "new" })
+    follow.handle(H.encode({
+      kind = "open", event = "PostToolUse", tool = "Edit", write = true,
+      path = path, added = { "new" },
+    }))
+
+    local bufnr = vim.fn.bufnr(path)
+    local ns = vim.api.nvim_get_namespaces()["claude_changes"]
+    H.settle(60)
+    local fading = vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, { details = true })
+    local saw_fade = false
+    for _, mark in ipairs(fading) do
+      local details = mark[4]
+      if details.line_hl_group and details.line_hl_group:match("^ClaudeAddedFade") then
+        saw_fade = true
+      end
+    end
+    assert.is_true(saw_fade)
+
+    H.settle(90)
+    assert.equals(0, #vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, {}))
   end)
 
   it("records a tool failure in the quickfix list", function()

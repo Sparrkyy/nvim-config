@@ -119,6 +119,27 @@ describe("flow.store", function()
     assert.equals(1, #store.comments(id, cwd))
   end)
 
+  it("keeps anchored implementation review comments through their lifecycle", function()
+    local id = plan()
+    local cid = store.add_review_comment(id, {
+      file = "lua/a.lua",
+      start_line = 4,
+      end_line = 6,
+      quote = "old text",
+      body = "Use the shared helper",
+    }, cwd)
+    assert.equals(1, #store.open_review_comments(id, cwd))
+    store.update_review_comment(id, cid, { start_line = 5 }, cwd)
+    assert.equals(5, store.review_comments(id, cwd)[1].start_line)
+    store.set_review_comment_status(id, { cid }, "resolved", "head123", cwd)
+    assert.equals(0, #store.open_review_comments(id, cwd))
+    assert.equals("head123", store.review_comments(id, cwd)[1].head)
+    store.set_review_comment_status(id, { cid }, "open", "head456", cwd)
+    assert.equals(1, #store.open_review_comments(id, cwd))
+    assert.is_true(store.remove_review_comment(id, cid, cwd))
+    assert.same({}, store.review_comments(id, cwd))
+  end)
+
   it("round-trips the steps", function()
     local id = plan()
     store.set_steps(id, { { id = "a", title = "Add a flag" } }, cwd)
@@ -128,6 +149,7 @@ describe("flow.store", function()
   it("returns an empty list, not nil, when there are no steps", function()
     assert.same({}, store.steps(plan(), cwd))
     assert.same({}, store.comments(plan(), cwd))
+    assert.same({}, store.review_comments(plan(), cwd))
     assert.same({}, store.feedback(plan(), cwd))
     assert.same({}, store.applied(plan(), cwd))
   end)

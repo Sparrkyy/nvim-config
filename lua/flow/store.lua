@@ -6,6 +6,7 @@
 --     meta.json          id, title, status, which revision is current
 --     revisions/001.json the design doc, one file per revision
 --     comments.json      your notes on the doc, never deleted
+--     review-comments.json anchored notes on implementation lines
 --     feedback.json      review instructions and their commit checkpoints
 --     steps.json         the ordered change stack
 --     diffs/<step>.json  the edits for one step
@@ -266,6 +267,93 @@ function M.address_comments(plan_id, ids, n, cwd)
     end
   end
   return M.write_json(comments_path(plan_id, cwd), list)
+end
+
+--- Implementation review comments ------------------------------------------
+
+local function review_comments_path(plan_id, cwd)
+  return M.plan_dir(plan_id, cwd) .. "/review-comments.json"
+end
+
+function M.review_comments(plan_id, cwd)
+  local data = M.read_json(review_comments_path(plan_id, cwd))
+  if type(data) ~= "table" or not vim.islist(data) then
+    return {}
+  end
+  return data
+end
+
+function M.open_review_comments(plan_id, cwd)
+  local out = {}
+  for _, comment in ipairs(M.review_comments(plan_id, cwd)) do
+    if comment.status == nil or comment.status == vim.NIL or comment.status == "open" then
+      table.insert(out, comment)
+    end
+  end
+  return out
+end
+
+function M.add_review_comment(plan_id, comment, cwd)
+  local list = M.review_comments(plan_id, cwd)
+  local entry = vim.tbl_extend("force", {
+    id = string.format("r%d-%04x", os.time(), math.random(0, 0xffff)),
+    created = os.time(),
+    status = "open",
+  }, comment or {})
+  table.insert(list, entry)
+  if not M.write_json(review_comments_path(plan_id, cwd), list) then
+    return nil
+  end
+  return entry.id
+end
+
+function M.update_review_comment(plan_id, comment_id, patch, cwd)
+  local list = M.review_comments(plan_id, cwd)
+  local updated = nil
+  for _, comment in ipairs(list) do
+    if comment.id == comment_id then
+      for key, value in pairs(patch or {}) do
+        comment[key] = value
+      end
+      updated = comment
+      break
+    end
+  end
+  if not updated or not M.write_json(review_comments_path(plan_id, cwd), list) then
+    return nil
+  end
+  return updated
+end
+
+function M.remove_review_comment(plan_id, comment_id, cwd)
+  local list = M.review_comments(plan_id, cwd)
+  local kept, found = {}, false
+  for _, comment in ipairs(list) do
+    if comment.id == comment_id then
+      found = true
+    else
+      table.insert(kept, comment)
+    end
+  end
+  if not found then
+    return false
+  end
+  return M.write_json(review_comments_path(plan_id, cwd), kept)
+end
+
+function M.set_review_comment_status(plan_id, ids, status, head, cwd)
+  local wanted = {}
+  for _, id in ipairs(ids or {}) do
+    wanted[id] = true
+  end
+  local list = M.review_comments(plan_id, cwd)
+  for _, comment in ipairs(list) do
+    if wanted[comment.id] then
+      comment.status = status
+      comment.head = head or vim.NIL
+    end
+  end
+  return M.write_json(review_comments_path(plan_id, cwd), list)
 end
 
 --- Review feedback ----------------------------------------------------------

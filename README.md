@@ -195,6 +195,7 @@ their own hooks never drive your editor. The settings live in `M.opts` in
 | ---------- | ---------------- |
 | `UserPromptSubmit` | Your editor state rides along with every prompt |
 | `PreToolUse` | The main window follows the file Claude touches |
+| `PostToolUse` | The buffer reloads; added code glows green and removed code lingers red before fading |
 | `PostToolUseFailure` | The failure lands in the quickfix list |
 | `TaskCreated` / `TaskCompleted` | The plan panel ticks off |
 | `SubagentStart` / `SubagentStop` | Running subagents show in the job window |
@@ -239,6 +240,17 @@ without waiting for you to approve each patch.
 
 Press `<leader>dn` and say what you want. Four phases follow.
 
+The review workspace also works independently of a Flow plan. Run
+`:FlowReview` or press `<leader>dR` anywhere inside a Git repository to review
+the current branch and local worktree against their merge base with `master`.
+Repositories without `master` fall back to `main`.
+The review opens as one real editable Neovim buffer. Removed base lines appear
+inline as virtual `−` lines. Added and replaced current lines remain normal
+buffer lines with diff highlights. Committed branch changes and current local
+edits share the same review experience. Pass another base when needed, for
+example `:FlowReview main`. Use `:FlowPlanReview` to reopen the verified
+implementation review for the current Flow plan.
+
 1. A background Claude session runs in plan mode and writes a design document.
    The plan names the new tests, the existing hot-path tests, and the exact
    targeted verification commands. It does not require a full suite unless the
@@ -254,16 +266,23 @@ Press `<leader>dn` and say what you want. Four phases follow.
 3. Flow refuses to start when the source worktree has a tracked, staged,
    untracked, or deleted change. From a clean source, it creates a `flow/...`
    branch and worktree, then opens a persistent Claude Code session there.
-   Claude commits each coherent step and runs the targeted verification. The
-   Stop hook sends Claude back to work if it leaves any change uncommitted or
-   stops before the first implementation commit.
-4. When the implementation is clean, committed, and verified, Flow opens the
-   real Git diff in a native Neovim diff tab. `<CR>` walks the finished hunks.
-   Press `r` and describe a style or design correction. The same Claude session
-   applies it across the repository, commits it, and verifies it before review
-   resumes. Press `u` to restore the verified commit from before the last
-   feedback. Press `m` when the review is complete. Flow asks once, squash
-   merges the worktree, and creates the final commit automatically.
+   Flow sends `/goal go implement this plan <final plan URL>` so Claude Code's
+   goal skill owns the implementation without copying the document into its
+   4,000-character command. The Stop hook sends Claude back to work if it
+   leaves any change uncommitted or stops before the first implementation
+   commit.
+4. When the implementation is clean, committed, and verified, Flow opens an
+   inline review workspace in Neovim. Current code is the real implementation
+   worktree buffer, with its normal LSP, completion, diagnostics, formatting,
+   and code actions. Removed base lines are virtual and cannot interfere with
+   editing. Flow ignores whitespace-only changes. It orders core files first,
+   then tests, then supporting files. Press `o` for the compact review overview.
+   Edit and save like any other buffer. Select lines and press `gc` to leave an
+   anchored comment. Press `s` to send all direct edits and open comments to the
+   same Claude session. Claude commits them and verifies the result before
+   review resumes at the same file. Press `m` when the review is complete. Flow
+   asks once, squash merges the worktree, and creates the final commit
+   automatically.
 
 ### The keys
 
@@ -273,21 +292,43 @@ Press `<leader>dn` and say what you want. Four phases follow.
 | `<leader>dp` | Open the plan in the browser |
 | `<leader>dv` | View the plan in a split, without the browser |
 | `<leader>dl` | Every plan in this directory, past and present |
-| `<leader>dj`, `]f` | Review the next finished hunk |
-| `<leader>dk`, `[f` | Review the previous hunk |
+| `<leader>dj`, `]c` | Review the next finished hunk |
+| `<leader>dk`, `[c` | Review the previous hunk |
+| `K`, `J` | Next or previous hunk inside the review only |
+| `]f`, `[f` | Review the next or previous changed file |
+| `o` | Toggle the ordered review overview |
 | `<leader>dr` | Send review feedback to Claude |
-| `<leader>dR` | Reopen the approved plan |
+| `<leader>dc` | Comment on the current review line |
+| `<leader>dS` | Submit review edits and comments |
+| `<leader>da` | Approve a clean verified review |
+| `<leader>dR` | Review this branch and worktree against `master` |
 | `<leader>du` | Restore the checkpoint before the last feedback |
 | `<leader>ds` | Toggle the implementation session |
 | `<leader>dm` | Squash and commit the verified implementation |
 
-While a finished diff is on screen: `<CR>` or `]f` advances, `[f` goes back,
-`r` sends feedback, `u` restores the previous checkpoint, `m` squashes, and
-`q` closes the review. The worktree side is read-only during review. Changes
-go through Claude so a correction can span files and gets verified again.
+While the review is open: `K` moves to the next hunk and `J` moves to the
+previous hunk, with `]c` and `[c`
+as alternate keys; `]f` and `[f` move
+between files; `gc` comments on a line or visual selection; `]r` and `[r` move
+between comments; `gC` removes the comment under the cursor; and `s` submits
+direct edits and comments for verification. `a` approves a clean verified
+review, `m` approves and squashes, `u` restores the previous checkpoint, `?`
+shows the keys, and `q` closes the review. The bottom action bar always shows
+the important commands and whether the review is verified, edited, or waiting
+on comments.
+
+The review has no file-tree split. It starts with one editable code window. For
+multi-file changes, a centered overview opens first and groups files as core,
+tests, and supporting changes. Within each group, larger changes appear first.
+Press `<CR>` to open a file or `o` to show or hide the overview at any time.
+
+In an independent branch review, the navigation, editing, and anchored-comment
+keys are the same. `s` saves edited buffers and durable local notes; Flow-only
+approval, agent submission, restoration, and squash actions are hidden.
 
 Commands: `:FlowPlan`, `:FlowOpen`, `:FlowShow`, `:FlowNext`, `:FlowPrev`,
-`:FlowSession`, `:FlowReview`, `:FlowFeedback`, `:FlowRestore`, `:FlowMerge`,
+`:FlowSession`, `:FlowReview [base]`, `:FlowPlanReview`, `:FlowFeedback`,
+`:FlowComment`, `:FlowSubmit`, `:FlowApprove`, `:FlowRestore`, `:FlowMerge`,
 `:FlowInterrupt`, `:FlowPlans`, `:FlowAbandon`.
 
 ### How it stays correct
@@ -304,10 +345,11 @@ It never silently reviews one commit and merges another one.
 
 ### What is on disk
 
-The plan, its revisions, comments, session identity, Git identities, and review
-feedback live under `~/.local/state/nvim/flow/<directory>/<plan>/`. Worktrees
-live under `~/.local/state/nvim/flow-worktrees/`. The final squash removes the
-worktree, but keeps its `flow/...` branch. That branch preserves Claude's full
+The plan, its revisions, plan comments, anchored implementation comments,
+session identity, Git identities, and review feedback live under
+`~/.local/state/nvim/flow/<directory>/<plan>/`. Worktrees live under
+`~/.local/state/nvim/flow-worktrees/`. The final squash removes the worktree,
+but keeps its `flow/...` branch. That branch preserves Claude's full
 implementation and review history after the target branch receives one commit.
 
 ### Needs

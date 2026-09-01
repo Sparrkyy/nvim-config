@@ -112,6 +112,23 @@ describe("status line", function()
   end)
 end)
 
+describe("diff review config", function()
+  local diffview
+
+  before_each(function()
+    diffview = spec_for("git", "sindrets/diffview.nvim")
+  end)
+
+  it("gives Flow a quiet readable file panel and enhanced change highlights", function()
+    assert.is_true(diffview.opts.enhanced_diff_hl)
+    assert.is_false(diffview.opts.show_help_hints)
+    assert.equals("diff2_horizontal", diffview.opts.view.default.layout)
+    assert.is_false(diffview.opts.view.default.disable_diagnostics)
+    assert.equals("left", diffview.opts.file_panel.win_config.position)
+    assert.equals(32, diffview.opts.file_panel.win_config.width)
+  end)
+end)
+
 describe("claude keymaps", function()
   local claude
 

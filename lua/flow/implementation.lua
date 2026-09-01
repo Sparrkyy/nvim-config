@@ -18,6 +18,7 @@ local ACTIVE = {
   revising = true,
   review_ready = true,
   reviewing = true,
+  review_dirty = true,
   merge_ready = true,
 }
 
@@ -47,43 +48,21 @@ local function uuid(plan_id)
   }, "-")
 end
 
-function M.prompt(markdown)
-  return table.concat({
-    "Implement this approved plan in this worktree.",
-    "Work autonomously until the implementation is complete and verified.",
-    "Use the repository's real tools. Read, edit, run commands, diagnose failures, and iterate.",
-    "Do not wait for a person to approve individual edits.",
-    "Stay inside this worktree for every repository change.",
-    "",
-    "Git rules:",
-    "- Commit each coherent implementation step.",
-    "- Commit tests with the behavior they verify when practical.",
-    "- Commit every correction that follows a failed test.",
-    "- Keep the commits small enough that a review instruction can be reversed.",
-    "- Do not rewrite, squash, or discard earlier commits.",
-    "- Do not stop with an uncommitted or untracked file.",
-    "",
-    "Verification rules:",
-    "- Implement the new tests named by the plan.",
-    "- Run those new tests.",
-    "- Run the existing targeted tests that cover the changed hot path.",
-    "- Do not run the full test suite unless the plan requires it.",
-    "- Do not stop until every required targeted test passes.",
-    "- Run the required verification again after the final code change.",
-    "- If you change Mermaid content, render every changed diagram and confirm it produces SVG.",
-    "- In the final response, list every verification command and its result.",
-    "",
-    "<approved-plan>",
-    markdown,
-    "</approved-plan>",
-  }, "\n")
+function M.prompt(plan_url)
+  return "/goal go implement this plan " .. plan_url
 end
 
-function M.feedback_prompt(text, context)
+function M.feedback_prompt(text, context, opts)
+  opts = opts or {}
   local parts = {
     "Apply this feedback from the final implementation review.",
     "Treat it as a repository-wide instruction, not only as a change to the visible hunk.",
     "Inspect the plan, implementation, tests, and related files before you decide what must change.",
+  }
+  if opts.direct_edits then
+    table.insert(parts, "Preserve the reviewer's direct worktree edits unless a review comment explicitly changes them.")
+  end
+  vim.list_extend(parts, {
     "If the requested change would break a necessary behavior, explain why and keep the correct behavior.",
     "Commit each coherent revision. Do not rewrite or discard the existing commits.",
     "Run the affected new tests and targeted hot-path tests after the final change.",
@@ -92,7 +71,7 @@ function M.feedback_prompt(text, context)
     "<review-feedback>",
     vim.trim(text),
     "</review-feedback>",
-  }
+  })
   if context and vim.trim(context) ~= "" then
     vim.list_extend(parts, {
       "",
@@ -239,8 +218,12 @@ function M.open(plan_id, opts)
     local resume = meta.session_started == true
     local prompt = nil
     if not resume then
-      local revision = store.revision(plan_id, nil, meta.cwd)
-      prompt = revision and revision.plan_md and M.prompt(revision.plan_md) or nil
+      local plan_url = require("flow.server").url(plan_id)
+      if not present(plan_url) then
+        notify("The final plan page is unavailable. Reopen the plan and approve it again.", vim.log.levels.ERROR)
+        return false
+      end
+      prompt = M.prompt(plan_url)
     end
     local started, err = start_terminal(plan_id, prompt, resume)
     if not started then
@@ -276,6 +259,13 @@ function M.begin(plan_id)
     notify("That plan has no approved document.", vim.log.levels.WARN)
     return false
   end
+  local plan_url = require("flow.server").url(plan_id)
+  if not present(plan_url) then
+    local err = "The final plan page is unavailable. Reopen the plan and approve it again."
+    store.set_meta(plan_id, { status = "review", error = err }, meta.cwd)
+    notify(err, vim.log.levels.ERROR)
+    return false
+  end
   if present(meta.worktree) and ACTIVE[meta.status] then
     M.open(plan_id)
     return true
@@ -301,7 +291,7 @@ function M.begin(plan_id)
   meta = store.set_meta(plan_id, patch, meta.cwd)
   require("claude.follow").register(meta.worktree)
 
-  local session, start_err = start_terminal(plan_id, M.prompt(revision.plan_md), false)
+  local session, start_err = start_terminal(plan_id, M.prompt(plan_url), false)
   if not session then
     store.set_meta(plan_id, { status = "implementation_failed", error = start_err }, meta.cwd)
     notify(start_err, vim.log.levels.ERROR)
@@ -313,8 +303,10 @@ function M.begin(plan_id)
   return true
 end
 
-function M.feedback(plan_id, text)
+function M.submit_review(plan_id, opts)
   plan_id = plan_id or require("flow").current()
+  opts = opts or {}
+  local text = opts.text
   if type(text) ~= "string" or vim.trim(text) == "" then
     return false
   end
@@ -323,10 +315,14 @@ function M.feedback(plan_id, text)
     notify("Finish implementation before sending review feedback.", vim.log.levels.WARN)
     return false
   end
-  local clean, clean_err = worktree.is_clean(meta.worktree)
   local head, head_err = worktree.head(meta.worktree)
-  if not clean or not head or head ~= meta.verified_head then
-    notify(clean_err or head_err or "The worktree changed after verification.", vim.log.levels.ERROR)
+  if not head or head ~= meta.verified_head then
+    notify(head_err or "The implementation HEAD changed after verification.", vim.log.levels.ERROR)
+    return false
+  end
+  local clean, clean_err = worktree.is_clean(meta.worktree)
+  if not clean and not opts.direct_edits then
+    notify(clean_err or "The worktree has direct edits. Submit them from the Flow review.", vim.log.levels.ERROR)
     return false
   end
 
@@ -337,14 +333,23 @@ function M.feedback(plan_id, text)
   pcall(function()
     require("flow.review").close()
   end)
+  meta = store.meta(plan_id, meta.cwd) or meta
   local feedback_id = store.push_feedback(plan_id, {
     body = vim.trim(text),
     checkpoint = head,
     review_cursor = meta.review_cursor or 1,
+    review_file = meta.review_file,
+    review_line = meta.review_line,
+    review_col = meta.review_col,
+    comment_ids = opts.comment_ids or {},
+    direct_edits = opts.direct_edits == true,
   }, meta.cwd)
   if not feedback_id then
     notify("Flow could not save the review checkpoint.", vim.log.levels.ERROR)
     return false
+  end
+  if #(opts.comment_ids or {}) > 0 then
+    store.set_review_comment_status(plan_id, opts.comment_ids, "submitted", head, meta.cwd)
   end
   store.set_meta(plan_id, {
     status = "revising",
@@ -352,7 +357,7 @@ function M.feedback(plan_id, text)
     verified_head = vim.NIL,
   }, meta.cwd)
 
-  local prompt = M.feedback_prompt(text, review_context)
+  local prompt = M.feedback_prompt(text, review_context, opts)
   local session = running_session(plan_id)
   if session and not session.exited then
     if not M.send_terminal(session, prompt) then
@@ -370,6 +375,10 @@ function M.feedback(plan_id, text)
   show_terminal(session, false)
   notify("Claude is applying review feedback. Review resumes after verification.")
   return true
+end
+
+function M.feedback(plan_id, text)
+  return M.submit_review(plan_id, { text = text })
 end
 
 function M.sync(plan_id, source_head)
@@ -443,7 +452,8 @@ function M.prompt_submitted(encoded)
     end
     local meta = plan_id and store.meta(plan_id)
     local review_state = meta and (
-      meta.status == "review_ready" or meta.status == "reviewing" or meta.status == "merge_ready"
+      meta.status == "review_ready" or meta.status == "reviewing" or meta.status == "review_dirty"
+        or meta.status == "merge_ready"
     )
     if not review_state or not present(meta.verified_head) then
       return "ignored"
@@ -552,12 +562,16 @@ function M.stop(encoded)
       base_head = meta.pending_base_head
     end
 
+    local finished_feedback = nil
     if present(meta.active_feedback) then
-      store.update_feedback(plan_id, meta.active_feedback, {
+      finished_feedback = store.update_feedback(plan_id, meta.active_feedback, {
         status = "verified",
         head = head,
         finished = os.time(),
       }, meta.cwd)
+      if finished_feedback and #(finished_feedback.comment_ids or {}) > 0 then
+        store.set_review_comment_status(plan_id, finished_feedback.comment_ids, "resolved", head, meta.cwd)
+      end
     end
     store.set_meta(plan_id, {
       status = "review_ready",
@@ -567,10 +581,13 @@ function M.stop(encoded)
       active_feedback = vim.NIL,
       base_head = base_head,
       pending_base_head = vim.NIL,
-      review_cursor = 1,
+      review_cursor = finished_feedback and finished_feedback.review_cursor or meta.review_cursor or 1,
+      review_file = finished_feedback and finished_feedback.review_file or meta.review_file,
+      review_line = finished_feedback and finished_feedback.review_line or meta.review_line,
+      review_col = finished_feedback and finished_feedback.review_col or meta.review_col,
       error = vim.NIL,
     }, meta.cwd)
-    notify("Implementation is committed and verified. Opening the finished diff.")
+    notify("Implementation is committed and verified. Opening the editable review.")
     fire("FlowReviewReady", plan_id)
     return "ready"
   end)

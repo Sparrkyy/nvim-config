@@ -10,6 +10,8 @@ local uv = vim.uv or vim.loop
 local ns = vim.api.nvim_create_namespace("claude_follow")
 local mark_ns = vim.api.nvim_create_namespace("claude_changes")
 local registry_dir = vim.fn.stdpath("cache") .. "/claude-follow"
+local pending_changes = {}
+local mark_epoch = 0
 
 M.enabled = true
 M.highlight_changes = true
@@ -17,6 +19,8 @@ M.permission_enabled = true
 M.status = "idle" -- idle | working
 M.last_tool = nil
 M.agents = {} -- running subagents, keyed by id
+M.change_linger_ms = 1100
+M.change_fade_ms = 900
 
 --- Registry -----------------------------------------------------------------
 -- Each Neovim instance writes its RPC address to a file keyed by its cwd.
@@ -117,6 +121,52 @@ end
 
 --- Actions ------------------------------------------------------------------
 
+local function full_path(path)
+  return vim.fn.resolve(vim.fn.fnamemodify(path, ":p"))
+end
+
+local function read_file_lines(path)
+  local ok, lines = pcall(vim.fn.readfile, full_path(path))
+  if not ok then
+    return nil
+  end
+  if #lines == 0 then
+    return { "" }
+  end
+  return lines
+end
+
+local function refresh_buffer(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+  local path = vim.api.nvim_buf_get_name(bufnr)
+  local disk_lines = read_file_lines(path)
+  if not disk_lines then
+    return false
+  end
+  local buffer_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  if vim.deep_equal(buffer_lines, disk_lines) then
+    return false
+  end
+  if vim.bo[bufnr].modified then
+    return false
+  end
+
+  vim.bo[bufnr].autoread = true
+  vim.api.nvim_buf_call(bufnr, function()
+    vim.cmd("silent! checktime")
+  end)
+
+  buffer_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  if not vim.deep_equal(buffer_lines, disk_lines) then
+    vim.api.nvim_buf_call(bufnr, function()
+      vim.cmd("silent! noautocmd edit!")
+    end)
+  end
+  return true
+end
+
 --- Show a file in the main window without taking focus.
 --- This is the immediate jump. M.open queues it instead; see Pacing below.
 ---@param path string absolute or cwd-relative path
@@ -141,9 +191,10 @@ local function show(path, line)
     return "nowin"
   end
 
-  local bufnr = vim.fn.bufadd(vim.fn.fnamemodify(path, ":p"))
+  local bufnr = vim.fn.bufadd(full_path(path))
   vim.fn.bufload(bufnr)
   vim.bo[bufnr].buflisted = true
+  refresh_buffer(bufnr)
 
   if vim.api.nvim_win_get_buf(win) ~= bufnr then
     vim.api.nvim_win_set_buf(win, bufnr)
@@ -165,10 +216,45 @@ end
 -- Claude tells us the exact text it wrote. Find that text in the file and give
 -- it a background colour, so the new code stands out from the code you wrote.
 
---- Define the colours. Link to the diff groups, so a colourscheme can override.
+local function blend_colour(source, target, weight)
+  local function channel(value, shift)
+    return math.floor(value / (2 ^ shift)) % 256
+  end
+  local function mixed(shift)
+    return math.floor(channel(source, shift) * weight + channel(target, shift) * (1 - weight) + 0.5)
+  end
+  return mixed(16) * 65536 + mixed(8) * 256 + mixed(0)
+end
+
+local function highlight_background(name, fallback)
+  local ok, value = pcall(vim.api.nvim_get_hl, 0, { name = name, link = false })
+  if ok and value and value.bg then
+    return value.bg
+  end
+  return fallback
+end
+
 local function define_highlights()
+  local dark = vim.o.background == "dark"
+  local normal = highlight_background("Normal", dark and 0x101418 or 0xf7f7f7)
+  local added = highlight_background("DiffAdd", dark and 0x21452d or 0xcdebd5)
+  local deleted = highlight_background("DiffDelete", dark and 0x552b32 or 0xf2cfd2)
+
   vim.api.nvim_set_hl(0, "ClaudeAdded", { link = "DiffAdd", default = true })
   vim.api.nvim_set_hl(0, "ClaudeAddedLabel", { link = "DiffChange", default = true })
+  vim.api.nvim_set_hl(0, "ClaudeDeleted", { link = "DiffDelete", default = true })
+  vim.api.nvim_set_hl(0, "ClaudeDeletedLabel", { link = "DiffDelete", default = true })
+
+  for step, weight in ipairs({ 0.72, 0.46, 0.22 }) do
+    vim.api.nvim_set_hl(0, "ClaudeAddedFade" .. step, {
+      bg = blend_colour(added, normal, weight),
+      default = true,
+    })
+    vim.api.nvim_set_hl(0, "ClaudeDeletedFade" .. step, {
+      bg = blend_colour(deleted, normal, weight),
+      default = true,
+    })
+  end
 end
 
 --- Locate a written chunk in a file.
@@ -212,6 +298,175 @@ local function chunk_range(path, chunk)
   return nil
 end
 
+local function record_position(bufnr, id)
+  local ok, position = pcall(vim.api.nvim_buf_get_extmark_by_id, bufnr, mark_ns, id, {})
+  if not ok or #position < 2 then
+    return nil
+  end
+  return position
+end
+
+local function update_record(record, stage)
+  if not vim.api.nvim_buf_is_valid(record.bufnr) then
+    return
+  end
+  local position = record_position(record.bufnr, record.id)
+  if not position then
+    return
+  end
+  local group
+  if stage == 0 then
+    group = record.change == "added" and "ClaudeAdded" or "ClaudeDeleted"
+  else
+    local prefix = record.change == "added" and "ClaudeAddedFade" or "ClaudeDeletedFade"
+    group = prefix .. stage
+  end
+
+  local opts = { id = record.id, priority = 210, strict = false }
+  if record.kind == "line" then
+    opts.line_hl_group = group
+  elseif record.kind == "label" then
+    opts.virt_text = { { "  claude", stage == 0 and "ClaudeAddedLabel" or group } }
+    opts.virt_text_pos = "eol"
+  else
+    opts.virt_lines = {}
+    for _, line in ipairs(record.lines) do
+      table.insert(opts.virt_lines, { { line == "" and " " or line, group } })
+    end
+    opts.virt_lines_above = record.above
+  end
+  pcall(vim.api.nvim_buf_set_extmark, record.bufnr, mark_ns, position[1], position[2], opts)
+end
+
+local function animate_records(records)
+  if #records == 0 then
+    return
+  end
+  local epoch = mark_epoch
+  local steps = 3
+  for stage = 1, steps do
+    local delay = M.change_linger_ms + math.floor(M.change_fade_ms * stage / (steps + 1))
+    vim.defer_fn(function()
+      if epoch ~= mark_epoch or not M.highlight_changes then
+        return
+      end
+      for _, record in ipairs(records) do
+        update_record(record, stage)
+      end
+      vim.cmd("redraw")
+    end, delay)
+  end
+  vim.defer_fn(function()
+    if epoch ~= mark_epoch then
+      return
+    end
+    for _, record in ipairs(records) do
+      if vim.api.nvim_buf_is_valid(record.bufnr) then
+        pcall(vim.api.nvim_buf_del_extmark, record.bufnr, mark_ns, record.id)
+      end
+    end
+    vim.cmd("redraw")
+  end, M.change_linger_ms + M.change_fade_ms)
+end
+
+local function add_line_records(bufnr, first, count, total, records)
+  for line = first, math.min(first + count - 1, total) do
+    local id = vim.api.nvim_buf_set_extmark(bufnr, mark_ns, line - 1, 0, {
+      line_hl_group = "ClaudeAdded",
+      priority = 210,
+    })
+    table.insert(records, { bufnr = bufnr, id = id, kind = "line", change = "added" })
+  end
+  if count > 0 and first <= total then
+    local id = vim.api.nvim_buf_set_extmark(bufnr, mark_ns, first - 1, 0, {
+      virt_text = { { "  claude", "ClaudeAddedLabel" } },
+      virt_text_pos = "eol",
+      priority = 210,
+    })
+    table.insert(records, { bufnr = bufnr, id = id, kind = "label", change = "added" })
+  end
+end
+
+local function add_deleted_record(bufnr, lines, new_start, new_count, total, records)
+  if #lines == 0 then
+    return
+  end
+  local after_last_line = new_count == 0 and new_start > total
+  local row = after_last_line and math.max(total - 1, 0) or math.max(0, math.min(new_start - 1, total - 1))
+  local above = not after_last_line
+  local virtual = {}
+  for _, line in ipairs(lines) do
+    table.insert(virtual, { { line == "" and " " or line, "ClaudeDeleted" } })
+  end
+  local id = vim.api.nvim_buf_set_extmark(bufnr, mark_ns, row, 0, {
+    virt_lines = virtual,
+    virt_lines_above = above,
+    priority = 210,
+    strict = false,
+  })
+  table.insert(records, {
+    bufnr = bufnr,
+    id = id,
+    kind = "deleted",
+    change = "deleted",
+    lines = lines,
+    above = above,
+  })
+end
+
+local function diff_hunks(before, after)
+  if vim.deep_equal(before, after) then
+    return {}
+  end
+  local ok, hunks = pcall(vim.diff, table.concat(before, "\n"), table.concat(after, "\n"), {
+    result_type = "indices",
+    algorithm = "histogram",
+  })
+  if ok and type(hunks) == "table" then
+    return hunks
+  end
+  return { { 1, #before, 1, #after } }
+end
+
+local function draw_diff(bufnr, before, after)
+  local records = {}
+  local first_changed
+  local total = vim.api.nvim_buf_line_count(bufnr)
+  for _, hunk in ipairs(diff_hunks(before, after)) do
+    local old_start = math.max(tonumber(hunk[1]) or 1, 1)
+    local old_count = math.max(tonumber(hunk[2]) or 0, 0)
+    local new_start = math.max(tonumber(hunk[3]) or 1, 1)
+    local new_count = math.max(tonumber(hunk[4]) or 0, 0)
+    first_changed = first_changed or math.max(1, math.min(new_start, total))
+
+    if old_count > 0 then
+      local removed = {}
+      for line = old_start, math.min(old_start + old_count - 1, #before) do
+        table.insert(removed, before[line])
+      end
+      add_deleted_record(bufnr, removed, new_start, new_count, total, records)
+    end
+    if new_count > 0 then
+      add_line_records(bufnr, new_start, new_count, total, records)
+    end
+  end
+  animate_records(records)
+  return first_changed, #records > 0
+end
+
+local function draw_added_chunks(bufnr, path, chunks)
+  local records = {}
+  local total = vim.api.nvim_buf_line_count(bufnr)
+  for _, chunk in ipairs(chunks) do
+    local start, count = chunk_range(path, chunk)
+    if start then
+      add_line_records(bufnr, start, count, total, records)
+    end
+  end
+  animate_records(records)
+  return #records > 0
+end
+
 --- Highlight the lines Claude just wrote in a file.
 ---@param path string
 ---@param chunks table list of written strings
@@ -219,44 +474,74 @@ function M.mark(path, chunks)
   if not M.highlight_changes or type(chunks) ~= "table" or #chunks == 0 then
     return
   end
-  local full = vim.fn.fnamemodify(path, ":p")
+  local full = full_path(path)
   if vim.fn.filereadable(full) == 0 then
     return
   end
 
   local bufnr = vim.fn.bufadd(full)
   vim.fn.bufload(bufnr)
-
-  -- Claude wrote to disk. Reload first, or the reload wipes the marks we set.
-  vim.api.nvim_buf_call(bufnr, function()
-    vim.cmd("silent! checktime")
-  end)
+  refresh_buffer(bufnr)
 
   vim.schedule(function()
     if not vim.api.nvim_buf_is_valid(bufnr) then
       return
     end
-    local total = vim.api.nvim_buf_line_count(bufnr)
-    for _, chunk in ipairs(chunks) do
-      local start, count = chunk_range(full, chunk)
-      if start then
-        for l = start, math.min(start + count - 1, total) do
-          pcall(vim.api.nvim_buf_set_extmark, bufnr, mark_ns, l - 1, 0, {
-            line_hl_group = "ClaudeAdded",
-          })
-        end
-        pcall(vim.api.nvim_buf_set_extmark, bufnr, mark_ns, start - 1, 0, {
-          virt_text = { { "  claude", "ClaudeAddedLabel" } },
-          virt_text_pos = "eol",
-        })
-      end
-    end
+    draw_added_chunks(bufnr, full, chunks)
+    vim.cmd("redraw")
   end)
+end
+
+local function prepare_change(path, line)
+  local full = full_path(path)
+  if vim.fn.filereadable(full) == 0 then
+    return
+  end
+  local bufnr = vim.fn.bufadd(full)
+  vim.fn.bufload(bufnr)
+  refresh_buffer(bufnr)
+  pending_changes[full] = {
+    lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false),
+    line = line,
+  }
+end
+
+local function finish_change(path, fallback_chunks)
+  local full = full_path(path)
+  if vim.fn.filereadable(full) == 0 then
+    pending_changes[full] = nil
+    return nil
+  end
+
+  local bufnr = vim.fn.bufadd(full)
+  vim.fn.bufload(bufnr)
+  local pending = pending_changes[full]
+  local before = pending and pending.lines or vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local after = read_file_lines(full)
+  pending_changes[full] = nil
+  if not after then
+    return pending and pending.line or nil
+  end
+  if vim.bo[bufnr].modified then
+    return pending and pending.line or nil
+  end
+
+  refresh_buffer(bufnr)
+  local first_changed, animated
+  if M.highlight_changes then
+    first_changed, animated = draw_diff(bufnr, before, after)
+    if not animated and type(fallback_chunks) == "table" and #fallback_chunks > 0 then
+      draw_added_chunks(bufnr, full, fallback_chunks)
+    end
+  end
+  vim.cmd("redraw")
+  return first_changed or (pending and pending.line or nil)
 end
 
 --- Remove the marks. Pass a buffer, or nothing to clear every buffer.
 ---@param bufnr number|nil
 function M.clear_marks(bufnr)
+  mark_epoch = mark_epoch + 1
   local targets = bufnr and { bufnr } or vim.api.nvim_list_bufs()
   for _, b in ipairs(targets) do
     if vim.api.nvim_buf_is_valid(b) then
@@ -404,6 +689,17 @@ local function find_line(path, needle)
   return nil
 end
 
+local function writes_file(tool, explicit)
+  if explicit == true then
+    return true
+  end
+  return tool == "Edit"
+    or tool == "Write"
+    or tool == "MultiEdit"
+    or tool == "NotebookEdit"
+    or tool == "Bash"
+end
+
 --- Entry point for the hook script. Takes base64 JSON to avoid shell quoting.
 ---@param encoded string
 function M.handle(encoded)
@@ -427,9 +723,14 @@ function M.handle(encoded)
       if not line and needle then
         line = find_line(path, needle)
       end
-      -- The hook sends "added" only after the write, when the text is on disk.
+      local event = present(data.event)
       local added = present(data.added)
-      if path and type(added) == "table" and #added > 0 then
+      local is_write = writes_file(data.tool, present(data.write))
+      if path and event == "PreToolUse" and is_write then
+        prepare_change(path, line)
+      elseif path and event == "PostToolUse" and is_write then
+        line = finish_change(path, added) or line
+      elseif path and type(added) == "table" and #added > 0 then
         M.mark(path, added)
       end
       return M.open(path, line)
@@ -748,7 +1049,12 @@ function M.setup()
       M.register(primary_dir)
     end,
   })
-  vim.api.nvim_create_autocmd("VimLeavePre", { group = aug, callback = M.unregister })
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = aug,
+    callback = function()
+      M.unregister()
+    end,
+  })
 
   define_highlights()
   vim.api.nvim_create_autocmd("ColorScheme", { group = aug, callback = define_highlights })

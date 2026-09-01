@@ -172,7 +172,7 @@ case "$event" in
         if [ -f "$word" ]; then target="$word"; break; fi
       done
       [ -z "$target" ] && exit 0
-      send "$(jq -nc --arg p "$target" '{kind:"open", tool:"Bash", path:$p, line:null, needle:null}')"
+      send "$(jq -nc --arg p "$target" --arg ev "$event" '{kind:"open", event:$ev, tool:"Bash", write:true, path:$p, line:null, needle:null}')"
       exit 0
     fi
 
@@ -182,6 +182,7 @@ case "$event" in
       kind: "open",
       event: $ev,
       tool: .tool_name,
+      write: ((.tool_name == "Edit") or (.tool_name == "Write") or (.tool_name == "MultiEdit") or (.tool_name == "NotebookEdit")),
       path: (.tool_input.file_path // .tool_input.notebook_path // empty),
       line: (.tool_input.offset // null),
       needle: (.tool_input.old_string // (.tool_input.edits[0].old_string? // null)),

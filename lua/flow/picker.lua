@@ -17,6 +17,7 @@ local ICON = {
   revising = "󰜺",
   review_ready = "󰈙",
   reviewing = "󰈙",
+  review_dirty = "󰜺",
   merge_ready = "󰄬",
   merging = "󰆧",
   merged = "󰄲",
@@ -51,7 +52,8 @@ local function choose(meta)
   require("flow").select(meta.id, meta.cwd)
   if meta.status == "implementing" or meta.status == "revising" or meta.status == "provisioning" then
     require("flow.implementation").open(meta.id)
-  elseif meta.status == "review_ready" or meta.status == "reviewing" or meta.status == "merge_ready" then
+  elseif meta.status == "review_ready" or meta.status == "reviewing" or meta.status == "review_dirty"
+    or meta.status == "merge_ready" then
     require("flow.review").open(meta.id)
   else
     require("flow").open(meta.id)

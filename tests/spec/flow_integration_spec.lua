@@ -63,13 +63,18 @@ describe("Flow Git integration", function()
     local feedback_head = assert(worktree.head(prepared.worktree))
     store.update_feedback(plan_id, feedback_id, { status = "verified", head = feedback_head }, source)
     store.set_meta(plan_id, { status = "review_ready", verified_head = feedback_head }, source)
+    local open = review.open
+    review.open = function()
+      return true
+    end
     H.capture_notify(function()
       assert.is_true(review.restore(plan_id))
     end)
+    review.open = open
     assert.same({ "two" }, vim.fn.readfile(prepared.worktree .. "/value.txt"))
     assert.equals("restored", store.last_feedback(plan_id, source).status)
     H.capture_notify(function()
-      assert.is_true(review.next(plan_id))
+      assert.is_true(review.approve(plan_id))
     end)
     assert.equals("merge_ready", store.meta(plan_id, source).status)
 

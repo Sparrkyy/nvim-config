@@ -36,6 +36,34 @@ return {
       { "<leader>gv", "<cmd>DiffviewOpen<cr>", desc = "Open diff view" },
       { "<leader>gh", "<cmd>DiffviewFileHistory %<cr>", desc = "File history" },
     },
-    opts = {},
+    opts = {
+      enhanced_diff_hl = true,
+      show_help_hints = false,
+      view = {
+        default = {
+          layout = "diff2_horizontal",
+          disable_diagnostics = false,
+          winbar_info = false,
+        },
+      },
+      file_panel = {
+        listing_style = "tree",
+        tree_options = {
+          flatten_dirs = true,
+          folder_statuses = "only_folded",
+        },
+        win_config = {
+          position = "left",
+          width = 32,
+          win_opts = {
+            cursorline = true,
+            number = false,
+            relativenumber = false,
+            signcolumn = "no",
+            winhighlight = "Normal:NormalFloat,WinSeparator:FlowBorder",
+          },
+        },
+      },
+    },
   },
 }

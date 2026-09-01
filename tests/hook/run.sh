@@ -220,6 +220,7 @@ msg=$(sent 1)
 check_json "follows an edit to its file" '.path' "/a.lua" "$msg"
 check_json "sends the old string as the search anchor" '.needle' "before" "$msg"
 check_json "sends no added text before the write" '.added | length' "0" "$msg"
+check_json "marks an edit as a write" '.write' "true" "$msg"
 
 run "$(payload '{cwd:$cwd, hook_event_name:"PostToolUse", tool_name:"Edit", tool_input:{file_path:"/a.lua", old_string:"before", new_string:"after one\nafter two"}}')" >/dev/null
 msg=$(sent 1)
@@ -237,6 +238,7 @@ check_json "keeps the second edit" '.added[1]' "two" "$msg"
 
 run "$(payload '{cwd:$cwd, hook_event_name:"PostToolUse", tool_name:"Read", tool_input:{file_path:"/a.lua", offset:42}}')" >/dev/null
 check_json "follows a Read to its offset" '.line' "42" "$(sent 1)"
+check_json "does not mark a Read as a write" '.write' "false" "$(sent 1)"
 
 run "$(payload '{cwd:$cwd, hook_event_name:"PreToolUse", tool_name:"Grep", tool_input:{pattern:"x"}}')" >/dev/null
 check "sends nothing for a tool with no file" "0" "$(rpc_count)"
@@ -245,7 +247,10 @@ check "sends nothing for a tool with no file" "0" "$(rpc_count)"
 
 printf 'x' > "$project/edited.txt"
 run "$(payload '{cwd:$cwd, hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:("sed -i \"\" s/a/b/ " + $cwd + "/edited.txt")}}')" >/dev/null
-check_json "follows an in-place sed to its file" '.tool' "Bash" "$(sent 1)"
+msg=$(sent 1)
+check_json "follows an in-place sed to its file" '.tool' "Bash" "$msg"
+check_json "marks an in-place sed as a write" '.write' "true" "$msg"
+check_json "keeps the shell hook phase" '.event' "PostToolUse" "$msg"
 
 run "$(payload '{cwd:$cwd, hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:"ls -la"}}')" >/dev/null
 check "ignores a read-only shell command" "0" "$(rpc_count)"

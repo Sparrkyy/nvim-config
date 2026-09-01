@@ -84,7 +84,7 @@ python3 -c "import json;json.load(open('$config/claude/hooks.json'))" 2>/dev/nul
 
 home=$(fresh)
 out=$(install_into "$home")
-check "installs onto a machine with no settings.json" "11" "$(entries "$home")"
+check "installs onto a machine with no settings.json" "12" "$(entries "$home")"
 [ -L "$home/.claude/hooks/nvim-follow.sh" ] \
   && ok "links the hook instead of copying it, so a pull updates it" \
   || no "links the hook instead of copying it, so a pull updates it"
@@ -97,7 +97,7 @@ home=$(fresh '{"model":"opus","effortLevel":"high"}')
 install_into "$home" >/dev/null
 check "keeps an unrelated setting" "opus" "$(key "$home" model)"
 check "keeps a second unrelated setting" "high" "$(key "$home" effortLevel)"
-check "and still registers the hooks" "11" "$(entries "$home")"
+check "and still registers the hooks" "12" "$(entries "$home")"
 ls "$home/.claude/settings.json.bak."* >/dev/null 2>&1 \
   && ok "backs the settings up before it writes" \
   || no "backs the settings up before it writes"
@@ -112,14 +112,14 @@ s=json.load(open('$home/.claude/settings.json'))
 print(sum(1 for a in s['hooks'].values() for m in a for h in m['hooks'] if h['command']=='/opt/other.sh'))
 ")
 check "keeps a hook somebody else registered" "1" "$other"
-check "and adds its own beside it" "11" "$(entries "$home")"
+check "and adds its own beside it" "12" "$(entries "$home")"
 
 # -- running it twice ---------------------------------------------------------
 
 home=$(fresh)
 install_into "$home" >/dev/null
 out=$(install_into "$home")
-check "running it again does not double the entries" "11" "$(entries "$home")"
+check "running it again does not double the entries" "12" "$(entries "$home")"
 printf '%s' "$out" | grep -q "already registered" \
   && ok "and says so instead of writing again" \
   || no "and says so instead of writing again"
@@ -137,7 +137,7 @@ s=json.load(open('$home/.claude/settings.json'))
 print(sum(1 for a in s['hooks'].values() for m in a for h in m['hooks'] if '/old/place/' in h['command']))
 ")
 check "drops an entry left by a repository that moved" "0" "$stale"
-check "and registers the current path" "11" "$(entries "$home")"
+check "and registers the current path" "12" "$(entries "$home")"
 
 # -- an existing real file is kept --------------------------------------------
 
