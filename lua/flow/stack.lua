@@ -22,8 +22,6 @@ M.opts = {
   lookahead = 10,
   max_concurrent = 3,
   max_retries = 2,
-  decompose_model = "opus",
-  diff_model = "sonnet",
   tools = "Read,Grep,Glob",
 }
 
@@ -285,7 +283,6 @@ function M.begin(plan_id)
     prompt = M.decompose_prompt(revision.plan_md),
     title = "Stack: " .. (meta.title or "plan"),
     cwd = meta.cwd,
-    model = M.opts.decompose_model,
     tools = M.opts.tools,
     permission_mode = "plan",
     json_schema = M.STEP_SCHEMA,
@@ -418,7 +415,6 @@ function M.generate(plan_id, step, opts)
     prompt = M.diff_prompt(revision.plan_md, step, opts.feedback),
     title = "Diff: " .. tostring(step.title):sub(1, 42),
     cwd = meta.cwd,
-    model = M.opts.diff_model,
     tools = M.opts.tools,
     permission_mode = "plan",
     json_schema = M.DIFF_SCHEMA,

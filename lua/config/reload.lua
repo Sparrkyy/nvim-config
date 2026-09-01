@@ -48,6 +48,10 @@ local function release_state()
   if stack_ok then
     pcall(stack.reset)
   end
+  local review_ok, review = pcall(require, "flow.review")
+  if review_ok then
+    pcall(review.close)
+  end
 end
 
 --- Drop and re-run the configuration.

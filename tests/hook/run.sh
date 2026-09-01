@@ -137,6 +137,17 @@ MOCK_NVIM_REPLY=""
 out=$(run "$(payload '{cwd:$cwd, hook_event_name:"UserPromptSubmit"}')")
 check "adds no context when Neovim returns nothing" "" "$out"
 
+export CLAUDE_NVIM_FLOW_ID="plan-1"
+MOCK_NVIM_REPLY=$(printf 'Cursor: source.lua line 9' | base64)
+out=$(run "$(payload '{cwd:$cwd, hook_event_name:"UserPromptSubmit"}')")
+check "does not inject source-worktree editor context into a Flow worktree" "" "$out"
+if grep -q "flow.implementation'.prompt_submitted" "$MOCK_NVIM_LOG"; then
+  ok "records direct Flow terminal input through the review checkpoint gate"
+else
+  no "records direct Flow terminal input through the review checkpoint gate"
+fi
+unset CLAUDE_NVIM_FLOW_ID
+
 # -- PermissionRequest -------------------------------------------------------
 
 MOCK_NVIM_REPLY="allow"
@@ -243,6 +254,25 @@ run "$(payload '{cwd:$cwd, hook_event_name:"PostToolUse", tool_name:"Bash", tool
 check "ignores git status" "0" "$(rpc_count)"
 
 # -- Stop --------------------------------------------------------------------
+
+export CLAUDE_NVIM_FLOW_ID="plan-1"
+MOCK_NVIM_REPLY="continue:Commit every change before stopping."
+out=$(run "$(payload '{cwd:$cwd, hook_event_name:"Stop", session_id:"flow-session"}')")
+check_json "keeps a Flow implementation running when Neovim refuses the stop" \
+  '.hookSpecificOutput.permissionDecision' "deny" "$out"
+check_json "passes the Flow continuation reason back to Claude" \
+  '.systemMessage' "Commit every change before stopping." "$out"
+if grep -q "flow.implementation'.stop" "$MOCK_NVIM_LOG"; then
+  ok "asks the Flow implementation gate about a Flow stop"
+else
+  no "asks the Flow implementation gate about a Flow stop"
+fi
+
+MOCK_NVIM_REPLY="ready"
+out=$(run "$(payload '{cwd:$cwd, hook_event_name:"Stop", session_id:"flow-session"}')")
+check "lets a verified Flow implementation stop" "" "$out"
+unset CLAUDE_NVIM_FLOW_ID
+MOCK_NVIM_REPLY=""
 
 out=$(run "$(payload '{cwd:$cwd, hook_event_name:"Stop", session_id:"s1"}')")
 check "stays silent with no project check script" "" "$out"

@@ -6,6 +6,7 @@
 --     meta.json          id, title, status, which revision is current
 --     revisions/001.json the design doc, one file per revision
 --     comments.json      your notes on the doc, never deleted
+--     feedback.json      review instructions and their commit checkpoints
 --     steps.json         the ordered change stack
 --     diffs/<step>.json  the edits for one step
 --     applied.json       the undo journal, with a file pre-image per entry
@@ -265,6 +266,57 @@ function M.address_comments(plan_id, ids, n, cwd)
     end
   end
   return M.write_json(comments_path(plan_id, cwd), list)
+end
+
+--- Review feedback ----------------------------------------------------------
+
+local function feedback_path(plan_id, cwd)
+  return M.plan_dir(plan_id, cwd) .. "/feedback.json"
+end
+
+function M.feedback(plan_id, cwd)
+  local data = M.read_json(feedback_path(plan_id, cwd))
+  if type(data) ~= "table" or not vim.islist(data) then
+    return {}
+  end
+  return data
+end
+
+function M.push_feedback(plan_id, entry, cwd)
+  local list = M.feedback(plan_id, cwd)
+  local item = vim.tbl_extend("force", {
+    id = string.format("f%d-%04x", os.time(), math.random(0, 0xffff)),
+    created = os.time(),
+    status = "running",
+  }, entry or {})
+  table.insert(list, item)
+  if not M.write_json(feedback_path(plan_id, cwd), list) then
+    return nil
+  end
+  return item.id
+end
+
+function M.update_feedback(plan_id, feedback_id, patch, cwd)
+  local list = M.feedback(plan_id, cwd)
+  local updated = nil
+  for _, item in ipairs(list) do
+    if item.id == feedback_id then
+      for key, value in pairs(patch or {}) do
+        item[key] = value
+      end
+      updated = item
+      break
+    end
+  end
+  if not updated or not M.write_json(feedback_path(plan_id, cwd), list) then
+    return nil
+  end
+  return updated
+end
+
+function M.last_feedback(plan_id, cwd)
+  local list = M.feedback(plan_id, cwd)
+  return list[#list]
 end
 
 --- Steps ---------------------------------------------------------------------

@@ -24,7 +24,7 @@ function M.handle(encoded)
     if type(msg) ~= "table" or type(msg.plan_id) ~= "string" then
       return "bad message"
     end
-    return M.dispatch(msg.action, msg.plan_id)
+    return M.dispatch(msg.action, msg.plan_id, msg)
   end)
   if not ok then
     return "error: " .. tostring(result):gsub("\n.*", "")
@@ -33,7 +33,7 @@ function M.handle(encoded)
 end
 
 --- Act on one browser button.
-function M.dispatch(action, plan_id)
+function M.dispatch(action, plan_id, details)
   local meta = store.meta(plan_id)
   if not meta then
     return "no such plan"
@@ -45,9 +45,20 @@ function M.dispatch(action, plan_id)
   end
 
   if action == "accept" then
+    details = details or {}
+    if tonumber(details.revision) ~= tonumber(meta.current_revision) then
+      return "accept refused: open the current plan revision"
+    end
+    if details.diagram_check ~= "passed" then
+      return "accept refused: Mermaid rendering check has not passed"
+    end
     require("flow").select(plan_id, meta.cwd)
-    require("flow.stack").begin(plan_id)
-    return "accepted"
+    local started = require("flow.implementation").begin(plan_id)
+    if started then
+      return "implementing"
+    end
+    local latest = store.meta(plan_id, meta.cwd)
+    return "implementation refused: " .. tostring(latest and latest.error or "unknown reason")
   end
 
   return "unknown action"

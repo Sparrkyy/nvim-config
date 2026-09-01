@@ -24,6 +24,12 @@ function M.check()
     err("node is not on the PATH", { "The plan review page needs node. Install it." })
   end
 
+  if vim.fn.executable("git") == 1 then
+    ok("git is on the PATH")
+  else
+    err("git is not on the PATH", { "Flow implementation and review need Git worktrees." })
+  end
+
   local server = require("flow.server")
   if vim.fn.filereadable(server.script()) == 1 then
     ok("the review server is at " .. server.script())
@@ -34,7 +40,7 @@ function M.check()
   if vim.v.servername ~= "" then
     ok("this Neovim answers at " .. vim.v.servername)
   else
-    err("this Neovim has no server address", { "The browser cannot call Replan or Accept." })
+    err("this Neovim has no server address", { "The browser cannot call Replan or Approve." })
   end
 
   if vim.fn.isdirectory(store.root) == 1 or vim.fn.mkdir(store.root, "p") == 1 then

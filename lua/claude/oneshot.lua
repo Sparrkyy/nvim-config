@@ -13,7 +13,6 @@ local hud = require("claude.hud")
 
 M.opts = {
   command = "claude", -- overridden in the tests by a mock
-  model = "sonnet", -- a one-off change needs no more
   max_turns = 12,
   timeout_ms = 180000,
   tools = "Read,Edit,Grep,Glob",
@@ -175,7 +174,6 @@ function M.run(spec)
     "--output-format", "stream-json",
     "--include-partial-messages",
     "--verbose",
-    "--model", M.opts.model,
     "--permission-mode", "acceptEdits",
     "--allowedTools", spec.tools or M.opts.tools,
     "--max-turns", tostring(M.opts.max_turns),

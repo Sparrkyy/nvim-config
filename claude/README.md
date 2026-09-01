@@ -43,16 +43,17 @@ Neovim registered for that directory. A failure here must never block Claude.
 backs the file up first, and it only ever touches entries that name
 `nvim-follow.sh`.
 
-## Two environment variables
+## Environment variables
 
 | Variable | Effect |
 | -------- | ------ |
-| `CLAUDE_NVIM_FOLLOW_DISABLE=1` | The session does not drive the editor. Flow and `claude.fixit` set this on the sessions they spawn, so background work never steals your window. |
+| `CLAUDE_NVIM_FOLLOW_DISABLE=1` | The session does not drive the editor. One-shot and fix sessions set this, so background work never steals your window. |
 | `CLAUDE_NVIM_FOLLOW_DEBUG=1` | Appends every hook payload to `$TMPDIR/nvim-follow.log`, one JSON object per line. |
+| `CLAUDE_NVIM_FLOW_ID=<plan>` | Routes a worktree session through Flow's commit and verification gate. Flow sets this itself. |
 
 ## Tests
 
-`tests/hook/run.sh` covers this script: 53 checks over every payload kind and
+`tests/hook/run.sh` covers this script: 59 checks over every payload kind and
 every malformed one. It runs against the copy in this repository, not the
 installed one, so a fresh clone can run the suite before installing anything.
 A mock `nvim` on `PATH` records the RPC calls, and a temporary `XDG_CACHE_HOME`

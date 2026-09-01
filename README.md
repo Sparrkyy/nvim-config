@@ -31,7 +31,7 @@ Already have a config? `mv ~/.config/nvim ~/.config/nvim.before` first.
     lua/ghostty/   the colourscheme: palette and highlight groups
     lua/plugins/   one file per area
     lua/claude/    follow mode, panels, prompt context
-    lua/flow/      plan a change, review it, apply it step by step
+    lua/flow/      plan, implement in a worktree, review, and squash
     tests/         the test suite
 
 The leader key is `<space>`. Nothing outside this repository is needed except
@@ -183,9 +183,10 @@ When a session ends, the buffer reloads and the changed lines get the same
 highlight as any other Claude edit. The notification names the job, so you can
 tell which of several sessions changed what.
 
-Each session runs with `--model sonnet`, a small tool list (`Read` and `Edit`
-for a fix), `--no-session-persistence`, and `CLAUDE_NVIM_FOLLOW_DISABLE=1`, so
-its own hooks never drive your editor. The settings live in `M.opts` in
+Each session inherits the model configured for the Claude CLI. A fix can read,
+search, edit, and run Bash commands so it can diagnose and verify the change.
+Sessions use `--no-session-persistence` and `CLAUDE_NVIM_FOLLOW_DISABLE=1`, so
+their own hooks never drive your editor. The settings live in `M.opts` in
 `lua/claude/oneshot.lua`, and the window's in `lua/claude/hud.lua`.
 
 ## What Claude sends and shows
@@ -231,20 +232,38 @@ For this project the check runs `tsc --noEmit` over the backend and frontend.
 
 ## Flow
 
-Flow plans a change with Claude, lets you review the plan as a design document
-in your browser, and then applies it one small change at a time, in Neovim.
+Flow gives you an interactive plan, an autonomous implementation, and an
+interactive review of the finished result. Claude does its real work in an
+isolated Git worktree. It can edit, run tests, diagnose failures, and try again
+without waiting for you to approve each patch.
 
-Press `<leader>dn` and say what you want. Three things happen.
+Press `<leader>dn` and say what you want. Four phases follow.
 
 1. A background Claude session runs in plan mode and writes a design document.
-   The window in the top right shows its progress. Keep working while it thinks.
-2. The document opens in your browser. It has diagrams, and it is written in
-   Simplified Technical English. Select any text and leave a comment on it.
-   **Replan** sends every open comment back to Claude and writes a new revision.
-   **Accept** turns the plan into a stack of changes.
-3. Back in Neovim, `<leader>dj` opens the first file, puts the cursor on the
-   line that changes, and draws the change around it. Nothing is written yet.
-   `<CR>` applies it and opens the next one. Keep pressing `<CR>`.
+   The plan names the new tests, the existing hot-path tests, and the exact
+   targeted verification commands. It does not require a full suite unless the
+   targeted tests cannot prove the change.
+2. The document opens in your browser one chunk at a time. Press **Listen** to
+   hear each chunk and advance through the plan automatically. Choose a voice
+   and speed; Flow remembers both. Select text and leave a comment. **Replan**
+   sends the open comments back to Claude. Flow renders every Mermaid diagram
+   with Mermaid 11 and confirms that each one produces SVG. A failed diagram
+   blocks approval. **Repair diagrams** records the renderer error and sends
+   the plan back to Claude. **Approve and implement** accepts only the current
+   revision after this rendering check passes.
+3. Flow refuses to start when the source worktree has a tracked, staged,
+   untracked, or deleted change. From a clean source, it creates a `flow/...`
+   branch and worktree, then opens a persistent Claude Code session there.
+   Claude commits each coherent step and runs the targeted verification. The
+   Stop hook sends Claude back to work if it leaves any change uncommitted or
+   stops before the first implementation commit.
+4. When the implementation is clean, committed, and verified, Flow opens the
+   real Git diff in a native Neovim diff tab. `<CR>` walks the finished hunks.
+   Press `r` and describe a style or design correction. The same Claude session
+   applies it across the repository, commits it, and verifies it before review
+   resumes. Press `u` to restore the verified commit from before the last
+   feedback. Press `m` when the review is complete. Flow asks once, squash
+   merges the worktree, and creates the final commit automatically.
 
 ### The keys
 
@@ -254,51 +273,42 @@ Press `<leader>dn` and say what you want. Three things happen.
 | `<leader>dp` | Open the plan in the browser |
 | `<leader>dv` | View the plan in a split, without the browser |
 | `<leader>dl` | Every plan in this directory, past and present |
-| `<leader>dj`, `]f` | Apply the next change |
-| `<leader>dk`, `[f` | Look at the change before this one |
-| `<leader>dr` | Revise the change in front of you |
-| `<leader>dR` | Revise the whole plan |
-| `<leader>du` | Undo the last applied change |
-| `<leader>ds` | Toggle the stack panel |
+| `<leader>dj`, `]f` | Review the next finished hunk |
+| `<leader>dk`, `[f` | Review the previous hunk |
+| `<leader>dr` | Send review feedback to Claude |
+| `<leader>dR` | Reopen the approved plan |
+| `<leader>du` | Restore the checkpoint before the last feedback |
+| `<leader>ds` | Toggle the implementation session |
+| `<leader>dm` | Squash and commit the verified implementation |
 
-While a change is on screen: `<CR>` apply and go on, `r` revise, `s` skip,
-`q` dismiss. `<CR>` opens the next change as soon as it writes this one, so one
-key walks the whole stack.
+While a finished diff is on screen: `<CR>` or `]f` advances, `[f` goes back,
+`r` sends feedback, `u` restores the previous checkpoint, `m` squashes, and
+`q` closes the review. The worktree side is read-only during review. Changes
+go through Claude so a correction can span files and gets verified again.
 
 Commands: `:FlowPlan`, `:FlowOpen`, `:FlowShow`, `:FlowNext`, `:FlowPrev`,
-`:FlowStack`, `:FlowPlans`, `:FlowAbandon`.
+`:FlowSession`, `:FlowReview`, `:FlowFeedback`, `:FlowRestore`, `:FlowMerge`,
+`:FlowInterrupt`, `:FlowPlans`, `:FlowAbandon`.
 
 ### How it stays correct
 
-Flow builds the next ten diffs while you work, so a step is ready the moment you
-reach it. Three rules keep that safe.
+Flow records the source branch, source commit, worktree branch, Claude session,
+verified commit, review cursor, and every feedback checkpoint. A verification
+belongs to one exact commit. Review feedback clears that verification until
+Claude commits and finishes the next targeted test run.
 
-1. **It waits on the file.** Flow never builds a step while an earlier step
-   changes the same file. That earlier step is about to move the ground the
-   model would read. The panel marks those steps `⋯` until they unblock.
-2. **It checks the file, not a counter.** Each diff records the generation of
-   the file it was built against, and applying or undoing raises that
-   generation. Before Flow shows you a change it also reads the file and
-   confirms every `old_string` is still there. A counter cannot see an edit you
-   made yourself.
-3. **It gives up.** If a rebuilt change still does not fit after two tries, Flow
-   stops, marks the step, and asks you to press `<leader>dr`. The same wrong
-   answer costs the same money every time.
-
-Flow never guesses at a position. It refuses an edit whose `old_string` is not
-in the file. It also refuses an empty `old_string` on a file that already has
-content: an empty `old_string` means "this is the whole file", so on a real file
-it would add a second copy of everything.
+The final merge checks both worktrees again. It refuses a dirty source, a dirty
+implementation, a different source branch, an implementation changed after
+verification, or a source branch that advanced after the worktree was created.
+It never silently reviews one commit and merges another one.
 
 ### What is on disk
 
-Everything, under `~/.local/state/nvim/flow/<directory>/<plan>/`: the document
-and every revision of it, every comment with the text it points at, the ordered
-steps, the diffs, and an undo journal that holds each file exactly as it was.
-Nothing is deleted. `<leader>dl` opens any of it again.
-
-`<leader>dR` does not roll changes back. It tells the next revision which steps
-are already applied, and plans from there.
+The plan, its revisions, comments, session identity, Git identities, and review
+feedback live under `~/.local/state/nvim/flow/<directory>/<plan>/`. Worktrees
+live under `~/.local/state/nvim/flow-worktrees/`. The final squash removes the
+worktree, but keeps its `flow/...` branch. That branch preserves Claude's full
+implementation and review history after the target branch receives one commit.
 
 ### Needs
 
@@ -387,7 +397,7 @@ The code is `lua/config/session.lua` and `lua/config/bufstack.lua`.
 
 ## Tests
 
-Run `tests/run.sh` before you commit. It runs 618 tests in about four minutes.
+Run `tests/run.sh` before you commit. It runs more than 600 tests in about four minutes.
 The pre-push hook runs it for you. See "Two machines".
 
     tests/run.sh              everything

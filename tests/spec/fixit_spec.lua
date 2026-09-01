@@ -162,7 +162,7 @@ describe("fixit", function()
     assert.is_truthy(text:match(">%s+3 | three"))
   end)
 
-  it("runs with a restricted tool list and accepts its own edits", function()
+  it("inherits the Claude default model and uses project and command-line tools", function()
     local path = H.write_file(dir, "f.ts", { "one" })
     local buf = open(path)
     diagnose(buf, { { lnum = 0, col = 0, message = "problem", severity = 1 } })
@@ -174,10 +174,30 @@ describe("fixit", function()
     end)
 
     local text = table.concat(vim.fn.readfile(log), "\n")
+    assert.is_falsy(text:match("%-%-model"))
     assert.is_truthy(text:match("%-%-allowedTools"))
-    assert.is_truthy(text:match("Read,Edit"))
+    assert.is_truthy(text:match("Read,Edit,Grep,Glob,Bash"))
     assert.is_truthy(text:match("acceptEdits"))
     assert.is_truthy(text:match("%-%-no%-session%-persistence"))
+  end)
+
+  it("allows dependency installation and related manifest changes", function()
+    local path = H.write_file(dir, "deps.ts", { "const port = process.env.PORT" })
+    local buf = open(path)
+    diagnose(buf, { { lnum = 0, col = 13, message = "Cannot find name 'process'", severity = 1 } })
+
+    local log = dir .. "/claude.log"
+    vim.env.MOCK_CLAUDE_LOG = log
+    run_fix(function()
+      fixit.fix()
+    end)
+
+    local text = table.concat(vim.fn.readfile(log), "\n")
+    assert.is_truthy(text:match("install it with the"))
+    assert.is_truthy(text:match("existing package manager"))
+    assert.is_truthy(text:match("manifests and lockfiles"))
+    assert.is_falsy(text:match("Do not run commands"))
+    assert.is_falsy(text:match("Do not touch another"))
   end)
 
   it("tells the follow hook to stay out of the way", function()

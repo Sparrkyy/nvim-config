@@ -47,8 +47,11 @@ return {
         ensure_installed = {
           "lua_ls", "ts_ls", "eslint", "jsonls",
           "html", "cssls", "bashls", "yamlls",
+          "csharp_ls",
         },
-        automatic_enable = true,
+        automatic_enable = {
+          exclude = { "omnisharp" },
+        },
       })
 
       -- Buffer-local keys. gd/gy/gi/gr/K match the old coc.nvim bindings.

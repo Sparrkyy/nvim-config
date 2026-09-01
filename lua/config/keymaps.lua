@@ -38,6 +38,8 @@ map("x", "<leader>p", [["_dP]], { desc = "Paste (keep register)" })
 -- Save and quit.
 map("n", "<leader>w", "<cmd>write<cr>", { desc = "Write file" })
 map("n", "<leader>q", "<cmd>quit<cr>", { desc = "Quit window" })
+map("n", "<leader>W", "<cmd>wa!<cr>", { desc = "Write all files" })
+map("n", "<leader>Q", "<cmd>qa!<cr>", { desc = "Force quit all" })
 
 -- Diagnostics.
 map("n", "[g", function() vim.diagnostic.jump({ count = -1, float = true }) end, { desc = "Previous diagnostic" })

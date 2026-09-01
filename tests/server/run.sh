@@ -166,6 +166,56 @@ if printf '%s' "$page" | grep -q 'mermaid'; then
 else
   no "the page loads mermaid for the diagrams"
 fi
+if printf '%s' "$page" | grep -q 'verifyDiagramRendering'; then
+  ok "the page verifies each Mermaid diagram produces SVG"
+else
+  no "the page verifies each Mermaid diagram produces SVG"
+fi
+if printf '%s' "$page" | grep -q 'id="diagram-status"'; then
+  ok "the page shows the Mermaid rendering gate"
+else
+  no "the page shows the Mermaid rendering gate"
+fi
+if printf '%s' "$page" | grep -q 'Repair diagrams'; then
+  ok "the page can send a failed diagram back for repair"
+else
+  no "the page can send a failed diagram back for repair"
+fi
+if printf '%s' "$page" | grep -q 'id="play"'; then
+  ok "the page has a narration control"
+else
+  no "the page has a narration control"
+fi
+if printf '%s' "$page" | grep -q 'id="rate"'; then
+  ok "the page has a narration speed control"
+else
+  no "the page has a narration speed control"
+fi
+if printf '%s' "$page" | grep -q 'id="voice"'; then
+  ok "the page has a narration voice control"
+else
+  no "the page has a narration voice control"
+fi
+if printf '%s' "$page" | grep -q 'getVoices'; then
+  ok "the page chooses from the browser voices"
+else
+  no "the page chooses from the browser voices"
+fi
+if printf '%s' "$page" | grep -q 'SpeechSynthesisUtterance'; then
+  ok "the page uses browser speech synthesis"
+else
+  no "the page uses browser speech synthesis"
+fi
+if printf '%s' "$page" | grep -q 'function planChunks'; then
+  ok "the page turns headings into presentation chunks"
+else
+  no "the page turns headings into presentation chunks"
+fi
+if printf '%s' "$page" | grep -q 'Approve and implement'; then
+  ok "the plan approval starts autonomous implementation"
+else
+  no "the plan approval starts autonomous implementation"
+fi
 check "404s anything else" "404" "$(status GET "$BASE/etc/passwd")"
 
 # Two bugs the page had. Both are invisible until you select text, so pin them
@@ -224,9 +274,13 @@ check_json "asks Neovim to replan" '.action' "replan" "$sent"
 check_json "names the plan in the message" '.plan_id' "$PLAN" "$sent"
 
 : > "$MOCK_NVIM_LOG"
-post "/accept" >/dev/null
+check "refuses approval without the Mermaid rendering check" "409" \
+  "$(status POST "$API/accept?token=$token")"
+post "/accept" '{"revision":2,"diagram_check":"passed","diagram_count":0}' >/dev/null
 sent=$(sed -n '1p' "$MOCK_NVIM_LOG" | sed -e "s/^.*handle('//" -e "s/').*$//" | base64 --decode)
 check_json "asks Neovim to accept" '.action' "accept" "$sent"
+check_json "sends the rendered revision to Neovim" '.revision' "2" "$sent"
+check_json "sends the Mermaid rendering result to Neovim" '.diagram_check' "passed" "$sent"
 
 check "404s an action it does not know" "404" "$(status POST "$API/explode?token=$token")"
 

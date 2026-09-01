@@ -1,18 +1,18 @@
--- Flow: plan a change, review it in a browser, then apply it one idea at a
--- time without leaving Neovim.
+-- Flow: approve a plan, let Claude implement and verify it in a worktree,
+-- review the finished diff, then squash it into the source branch.
 --
 --   <leader>dn  new plan
 --   <leader>dp  open the current plan in the browser
---   <leader>dj  apply the next change
---   <leader>dk  view the previous change
---   <leader>dr  revise this change
---   <leader>dR  revise the whole plan
---   <leader>du  undo the last applied change
---   <leader>ds  toggle the stack panel
+--   <leader>dj  review the next finished hunk
+--   <leader>dk  review the previous hunk
+--   <leader>dr  send review feedback to Claude
+--   <leader>du  restore the checkpoint before the last feedback
+--   <leader>ds  toggle the implementation session
+--   <leader>dm  squash and commit the verified implementation
 --   <leader>dl  list every plan
 --
--- The stages live in flow.planner (write the doc), flow.server (review it),
--- and flow.stack (apply it). This file is the wiring.
+-- The stages live in flow.planner, flow.implementation, flow.review, and
+-- flow.merge. This file is the wiring.
 
 local M = {}
 
@@ -49,7 +49,7 @@ end
 -- because it is recomputed from disk whenever it is missing.
 local selected = {}
 
-local DONE = { done = true, abandoned = true }
+local DONE = { done = true, merged = true, abandoned = true }
 
 --- The plan the keymaps act on. The newest unfinished plan, unless you picked
 --- another one with :FlowPlans.
@@ -57,8 +57,11 @@ local DONE = { done = true, abandoned = true }
 function M.current(cwd)
   cwd = cwd or vim.fn.getcwd()
   local chosen = selected[cwd]
-  if chosen and store.meta(chosen, cwd) then
+  local chosen_meta = chosen and store.meta(chosen, cwd)
+  if chosen_meta and not DONE[chosen_meta.status] then
     return chosen
+  elseif chosen then
+    selected[cwd] = nil
   end
   for _, meta in ipairs(store.plans(cwd)) do
     if not DONE[meta.status] then
@@ -135,6 +138,11 @@ function M.abandon(plan_id)
   if not plan_id then
     return
   end
+  local meta = store.meta(plan_id)
+  if meta and meta.worktree and meta.worktree ~= vim.NIL and vim.fn.isdirectory(meta.worktree) == 1 then
+    notify("This plan owns an implementation worktree. Merge it before abandoning the plan.", vim.log.levels.WARN)
+    return
+  end
   store.set_meta(plan_id, { status = "abandoned" })
   selected[vim.fn.getcwd()] = nil
   notify("Plan abandoned. It stays on disk.")
@@ -164,16 +172,40 @@ local function commands()
   end, { desc = "Abandon the current plan" })
 
   cmd("FlowNext", function()
-    require("flow.stack").next()
-  end, { desc = "Apply the next change" })
+    require("flow.review").next()
+  end, { desc = "Review the next finished hunk" })
 
   cmd("FlowPrev", function()
-    require("flow.stack").prev()
-  end, { desc = "View the previous change" })
+    require("flow.review").prev()
+  end, { desc = "Review the previous finished hunk" })
 
   cmd("FlowStack", function()
-    require("flow.stack").toggle_panel()
-  end, { desc = "Toggle the change stack panel" })
+    require("flow.implementation").toggle()
+  end, { desc = "Toggle the implementation session" })
+
+  cmd("FlowSession", function()
+    require("flow.implementation").open()
+  end, { desc = "Open the implementation session" })
+
+  cmd("FlowReview", function()
+    require("flow.review").open()
+  end, { desc = "Review the verified implementation" })
+
+  cmd("FlowFeedback", function(a)
+    require("flow.review").feedback(nil, a.args)
+  end, { nargs = "?", desc = "Send implementation-review feedback" })
+
+  cmd("FlowRestore", function()
+    require("flow.review").restore()
+  end, { desc = "Restore the checkpoint before the last feedback" })
+
+  cmd("FlowMerge", function()
+    require("flow.merge").squash()
+  end, { desc = "Squash and commit the verified implementation" })
+
+  cmd("FlowInterrupt", function()
+    require("flow.implementation").interrupt()
+  end, { desc = "Interrupt the implementation session" })
 
   cmd("FlowPlans", function()
     require("flow.picker").plans()
@@ -198,29 +230,32 @@ local function keymaps()
     require("flow.picker").plans()
   end, "Flow: list plans")
   map("<leader>dj", function()
-    require("flow.stack").next()
-  end, "Flow: apply next change")
+    require("flow.review").next()
+  end, "Flow: review next hunk")
   map("<leader>dk", function()
-    require("flow.stack").prev()
-  end, "Flow: view previous change")
+    require("flow.review").prev()
+  end, "Flow: review previous hunk")
   map("<leader>dr", function()
-    require("flow.stack").revise_step()
-  end, "Flow: revise this change")
+    require("flow.review").feedback()
+  end, "Flow: send review feedback")
   map("<leader>dR", function()
-    require("flow.stack").revise_plan()
-  end, "Flow: revise the plan")
+    M.open()
+  end, "Flow: reopen the approved plan")
   map("<leader>du", function()
-    require("flow.stack").undo()
-  end, "Flow: undo last change")
+    require("flow.review").restore()
+  end, "Flow: restore before feedback")
   map("<leader>ds", function()
-    require("flow.stack").toggle_panel()
-  end, "Flow: toggle stack panel")
+    require("flow.implementation").toggle()
+  end, "Flow: toggle implementation session")
+  map("<leader>dm", function()
+    require("flow.merge").squash()
+  end, "Flow: squash and commit")
   map("]f", function()
-    require("flow.stack").next()
-  end, "Flow: apply next change")
+    require("flow.review").next()
+  end, "Flow: review next hunk")
   map("[f", function()
-    require("flow.stack").prev()
-  end, "Flow: view previous change")
+    require("flow.review").prev()
+  end, "Flow: review previous hunk")
 end
 
 function M.setup()
@@ -247,6 +282,19 @@ function M.setup()
 
   vim.api.nvim_create_autocmd("User", {
     group = group,
+    pattern = "FlowReviewReady",
+    callback = function(ev)
+      local plan_id = ev.data and ev.data.plan_id
+      if plan_id then
+        vim.schedule(function()
+          pcall(require("flow.review").open, plan_id)
+        end)
+      end
+    end,
+  })
+
+  vim.api.nvim_create_autocmd("User", {
+    group = group,
     pattern = "FlowPlanFailed",
     callback = function(ev)
       local plan_id = ev.data and ev.data.plan_id
@@ -267,15 +315,17 @@ function M.setup()
       end)
     end,
   })
+
+  require("flow.implementation").recover()
 end
 
---- The statusline fragment. Empty unless a stack is in play.
+--- The statusline fragment. Empty unless an implementation is in play.
 function M.statusline()
-  local ok, stack = pcall(require, "flow.stack")
+  local ok, implementation = pcall(require, "flow.implementation")
   if not ok then
     return ""
   end
-  return stack.statusline()
+  return implementation.statusline()
 end
 
 return M

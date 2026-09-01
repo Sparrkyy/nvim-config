@@ -22,7 +22,7 @@ M.agents = {} -- running subagents, keyed by id
 -- Each Neovim instance writes its RPC address to a file keyed by its cwd.
 -- The hook script looks the address up and calls back.
 
-local registry_file = nil
+local registry_files = {}
 
 -- One directory per cwd, one file per Neovim instance. Several editors can sit
 -- in the same project without clobbering each other, and an instance only ever
@@ -31,26 +31,41 @@ local function registry_dir_for(dir)
   return registry_dir .. "/" .. vim.fn.sha256(dir)
 end
 
-function M.register()
+local function normalized_dir(dir)
+  local full = vim.fn.resolve(vim.fn.fnamemodify(dir or uv.cwd(), ":p"))
+  return full:gsub("/+$", "")
+end
+
+function M.register(dir)
   local server = vim.v.servername
   if not server or server == "" then
     return
   end
-  local dir = registry_dir_for(uv.cwd())
-  vim.fn.mkdir(dir, "p")
-  local path = dir .. "/" .. tostring(uv.os_getpid()) .. ".server"
+  local cwd = normalized_dir(dir)
+  local target = registry_dir_for(cwd)
+  vim.fn.mkdir(target, "p")
+  local path = target .. "/" .. tostring(uv.os_getpid()) .. ".server"
   local fd = io.open(path, "w")
   if fd then
     fd:write(server)
     fd:close()
-    registry_file = path
+    registry_files[cwd] = path
   end
 end
 
-function M.unregister()
-  if registry_file then
-    os.remove(registry_file)
-    registry_file = nil
+function M.unregister(dir)
+  if dir then
+    local cwd = normalized_dir(dir)
+    local path = registry_files[cwd]
+    if path then
+      os.remove(path)
+      registry_files[cwd] = nil
+    end
+    return
+  end
+  for cwd, path in pairs(registry_files) do
+    os.remove(path)
+    registry_files[cwd] = nil
   end
 end
 
@@ -724,11 +739,13 @@ end
 
 function M.setup()
   local aug = vim.api.nvim_create_augroup("ClaudeFollow", { clear = true })
+  local primary_dir = normalized_dir(uv.cwd())
   vim.api.nvim_create_autocmd({ "VimEnter", "DirChanged" }, {
     group = aug,
     callback = function()
-      M.unregister()
-      M.register()
+      M.unregister(primary_dir)
+      primary_dir = normalized_dir(uv.cwd())
+      M.register(primary_dir)
     end,
   })
   vim.api.nvim_create_autocmd("VimLeavePre", { group = aug, callback = M.unregister })

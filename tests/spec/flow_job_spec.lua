@@ -31,6 +31,10 @@ describe("flow.job", function()
     assert.equals("stream-json", flags(cmd)["--output-format"])
   end)
 
+  it("inherits the configured Claude model", function()
+    assert.is_false(vim.tbl_contains(job.command({ prompt = "x" }), "--model"))
+  end)
+
   it("never lets a background job ask a question", function()
     assert.equals("AskUserQuestion", flags(job.command({ prompt = "x" }))["--disallowedTools"])
   end)

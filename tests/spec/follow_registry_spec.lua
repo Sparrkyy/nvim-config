@@ -48,6 +48,18 @@ describe("follow registry", function()
       follow.unregister()
     end)
   end)
+
+  it("registers and removes a Flow worktree alias", function()
+    local worktree = H.tmpdir()
+    follow.register(worktree)
+    local key = vim.fn.sha256(worktree)
+    local path = vim.fn.stdpath("cache") .. "/claude-follow/" .. key .. "/" .. tostring(vim.uv.os_getpid()) .. ".server"
+    if vim.v.servername ~= "" then
+      assert.equals(1, vim.fn.filereadable(path))
+    end
+    follow.unregister(worktree)
+    assert.equals(0, vim.fn.filereadable(path))
+  end)
 end)
 
 describe("follow permission", function()

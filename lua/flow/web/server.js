@@ -121,8 +121,8 @@ function tellNvim(payload, done) {
   }
   const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
   const expr = "v:lua.require'flow.bridge'.handle('" + encoded + "')";
-  execFile("nvim", ["--server", NVIM, "--remote-expr", expr], { timeout: 10000 }, (err) => {
-    done(err || null);
+  execFile("nvim", ["--server", NVIM, "--remote-expr", expr], { timeout: 10000 }, (err, stdout) => {
+    done(err || null, String(stdout || "").trim());
   });
 }
 
@@ -236,12 +236,39 @@ const server = http.createServer((req, res) => {
     return sendJson(res, 200, { removed: parts[4] });
   }
 
-  if (req.method === "POST" && (action === "replan" || action === "accept")) {
-    return tellNvim({ action, plan_id: planId }, (err) => {
+  if (req.method === "POST" && action === "replan") {
+    return tellNvim({ action, plan_id: planId }, (err, result) => {
       if (err) {
         return sendJson(res, 502, { error: "Neovim did not answer: " + err.message });
       }
-      return sendJson(res, 200, { ok: true, action });
+      if (/refused|^error:|^no such/.test(result)) {
+        return sendJson(res, 409, { error: result });
+      }
+      return sendJson(res, 200, { ok: true, action, result });
+    });
+  }
+
+  if (req.method === "POST" && action === "accept") {
+    return readBody(req, (body) => {
+      if (!body || body.diagram_check !== "passed" || !Number.isInteger(Number(body.revision))) {
+        return sendJson(res, 409, { error: "Mermaid rendering check has not passed" });
+      }
+      const message = {
+        action,
+        plan_id: planId,
+        revision: Number(body.revision),
+        diagram_check: body.diagram_check,
+        diagram_count: Number(body.diagram_count) || 0,
+      };
+      return tellNvim(message, (err, result) => {
+        if (err) {
+          return sendJson(res, 502, { error: "Neovim did not answer: " + err.message });
+        }
+        if (/refused|^error:|^no such/.test(result)) {
+          return sendJson(res, 409, { error: result });
+        }
+        return sendJson(res, 200, { ok: true, action, result });
+      });
     });
   }
 

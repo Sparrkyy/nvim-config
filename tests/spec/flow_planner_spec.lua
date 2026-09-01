@@ -34,6 +34,22 @@ describe("flow.planner", function()
 
   it("asks for mermaid diagrams in the contract", function()
     assert.is_truthy(planner.DOC_CONTRACT:match("mermaid"))
+    assert.is_truthy(planner.DOC_CONTRACT:match("Mermaid 11"))
+    assert.is_truthy(planner.DOC_CONTRACT:match("render it as SVG"))
+    assert.is_truthy(planner.DOC_CONTRACT:match("blocks approval"))
+  end)
+
+  it("asks for language that works when the browser narrates it", function()
+    assert.is_truthy(planner.DOC_CONTRACT:match("reads one section aloud"))
+    assert.is_truthy(planner.DOC_CONTRACT:match("Define each technical term"))
+    assert.is_truthy(planner.DOC_CONTRACT:match("reading order"))
+  end)
+
+  it("makes targeted verification part of the approved contract", function()
+    assert.is_truthy(planner.DOC_CONTRACT:match("new test"))
+    assert.is_truthy(planner.DOC_CONTRACT:match("changed hot path"))
+    assert.is_truthy(planner.DOC_CONTRACT:match("exact command"))
+    assert.is_truthy(planner.DOC_CONTRACT:match("Do not require the full suite"))
   end)
 
   it("names every section it expects, so the page can rely on them", function()

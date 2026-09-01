@@ -36,6 +36,12 @@ header .title { font-weight: 600; font-size: .95rem; margin-right: auto;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
 header .status { font-size: .7rem; letter-spacing: .08em; text-transform: uppercase;
   color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: .1rem .55rem; }
+header .status.ok { color: var(--ok); border-color: var(--ok); }
+header .status.error { color: var(--warn); border-color: var(--warn); }
+#narration { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+#progress { min-width: 3.5rem; color: var(--muted); font-size: .78rem; text-align: center; }
+#voice-label, #speed-label { display: flex; gap: .35rem; align-items: center;
+  color: var(--muted); font-size: .78rem; }
 select, button {
   font: inherit; font-size: .82rem; font-family: ui-sans-serif, system-ui, sans-serif;
   border: 1px solid var(--line); background: var(--panel); color: var(--ink);
@@ -52,6 +58,11 @@ main { display: grid; grid-template-columns: 1fr var(--gutter); gap: 2rem;
 
 #doc { max-width: var(--doc); }
 #doc > * { position: relative; scroll-margin-top: 5rem; }
+#doc.guided > [data-chunk] { display: none; }
+#doc.guided > [data-chunk].chunk-active { display: block; }
+#doc.guided > h1.chunk-active,
+#doc.guided > h2.chunk-active,
+#doc.guided > h3.chunk-active { margin-top: 0; }
 #doc h1 { font-size: 2rem; line-height: 1.25; margin: 0 0 1.5rem; letter-spacing: -.01em; }
 #doc h2 { font-size: 1.25rem; margin: 2.75rem 0 .85rem; padding-bottom: .35rem;
   border-bottom: 1px solid var(--line); letter-spacing: -.005em; }
@@ -71,6 +82,7 @@ main { display: grid; grid-template-columns: 1fr var(--gutter); gap: 2rem;
 #doc th, #doc td { border: 1px solid var(--line); padding: .4rem .6rem; text-align: left; }
 #doc th { background: var(--code-bg); font-weight: 600; }
 #doc pre.mermaid { background: var(--panel); text-align: center; }
+#doc pre.mermaid.error { text-align: left; border-color: var(--warn); color: var(--warn); }
 #doc .commented { background: var(--accent-soft); border-radius: .3rem;
   box-shadow: -.6rem 0 0 0 var(--accent-soft), .6rem 0 0 0 var(--accent-soft); }
 
@@ -107,10 +119,32 @@ aside { position: relative; font-family: ui-sans-serif, system-ui, sans-serif; }
 <header>
   <span class="title" id="title">Loading…</span>
   <span class="status" id="status"></span>
+  <span class="status" id="diagram-status" aria-live="polite">Checking diagrams</span>
+  <div id="narration" aria-label="Plan narration">
+    <button class="ghost" id="previous" aria-label="Previous chunk">←</button>
+    <button id="play">Listen</button>
+    <button class="ghost" id="next" aria-label="Next chunk">→</button>
+    <span id="progress" aria-live="polite"></span>
+    <label id="voice-label" for="voice">Voice
+      <select id="voice">
+        <option value="">Best available</option>
+      </select>
+    </label>
+    <label id="speed-label" for="rate">Speed
+      <select id="rate">
+        <option value="0.75">0.75×</option>
+        <option value="1">1×</option>
+        <option value="1.25">1.25×</option>
+        <option value="1.5">1.5×</option>
+        <option value="2">2×</option>
+      </select>
+    </label>
+    <button class="ghost" id="viewmode">Show all</button>
+  </div>
   <select id="revsel" title="Revision"></select>
   <button class="ghost" id="refresh">Refresh</button>
   <button id="replan" disabled>Replan</button>
-  <button class="primary" id="accept">Accept</button>
+  <button class="primary" id="accept">Approve and implement</button>
 </header>
 
 <main>
@@ -141,8 +175,100 @@ const API = "/api/plan/" + PLAN;
 let state = { meta: {}, revision: null, revisions: [], comments: [] };
 let viewing = null;   // the revision number on screen
 let pending = null;   // the selection a new comment attaches to
+let diagramCheck = { generation: 0, revision: 0, status: "checking", count: 0, error: "" };
 
 const $ = (id) => document.getElementById(id);
+const RATE_KEY = "flow-plan-narration-rate";
+const VOICE_KEY = "flow-plan-narration-voice";
+const canSpeak = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+
+function savedRate() {
+  try {
+    const value = Number(localStorage.getItem(RATE_KEY));
+    return [0.75, 1, 1.25, 1.5, 2].includes(value) ? value : 1;
+  } catch {
+    return 1;
+  }
+}
+
+function savedVoice() {
+  try {
+    return localStorage.getItem(VOICE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+const narration = {
+  chunks: [],
+  index: 0,
+  guided: true,
+  playing: false,
+  paused: false,
+  generation: 0,
+  rate: savedRate(),
+  voiceURI: savedVoice(),
+};
+
+const preferredVoices = [
+  "Daniel",
+  "Reed",
+  "Sandy",
+  "Shelley",
+  "Eddy",
+  "Flo",
+  "Samantha",
+];
+
+function narrationVoices() {
+  if (!canSpeak) return [];
+  const all = window.speechSynthesis.getVoices();
+  const english = all.filter((voice) => /^en(?:-|_)/i.test(voice.lang));
+  return english.length ? english : all;
+}
+
+function voiceScore(voice) {
+  const name = voice.name || "";
+  const preferred = preferredVoices.findIndex((candidate) => name === candidate || name.startsWith(candidate + " ("));
+  let score = /natural|neural|premium|enhanced/i.test(name) ? 1000 : 0;
+  if (preferred >= 0) score += 10000 - preferred * 100;
+  if (/^en(?:-|_)US$/i.test(voice.lang)) score += 100;
+  if (voice.localService) score += 20;
+  if (voice.default) score -= 10;
+  return score;
+}
+
+function bestVoice(voices) {
+  return voices.slice().sort((a, b) => voiceScore(b) - voiceScore(a) || a.name.localeCompare(b.name))[0] || null;
+}
+
+function selectedVoice() {
+  const voices = narrationVoices();
+  return voices.find((voice) => voice.voiceURI === narration.voiceURI) || bestVoice(voices);
+}
+
+function populateVoices() {
+  const select = $("voice");
+  const voices = narrationVoices()
+    .slice()
+    .sort((a, b) => voiceScore(b) - voiceScore(a) || a.name.localeCompare(b.name));
+  const automatic = bestVoice(voices);
+  select.innerHTML = "";
+
+  const option = document.createElement("option");
+  option.value = "";
+  option.textContent = automatic ? "Automatic — " + automatic.name : "Automatic";
+  select.appendChild(option);
+
+  voices.forEach((voice) => {
+    const item = document.createElement("option");
+    item.value = voice.voiceURI;
+    item.textContent = voice.name + " (" + voice.lang.replace("_", "-") + ")";
+    select.appendChild(item);
+  });
+  select.value = voices.some((voice) => voice.voiceURI === narration.voiceURI) ? narration.voiceURI : "";
+  select.disabled = !canSpeak || voices.length === 0;
+}
 
 function toast(text) {
   const el = $("toast");
@@ -167,6 +293,187 @@ function slug(text) {
   return text.toLowerCase().replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
 }
 
+function headingLevel(el) {
+  const match = /^H([1-3])$/.exec(el.tagName);
+  return match ? Number(match[1]) : 0;
+}
+
+// Headings already divide a plan into useful pieces. A heading with no body
+// joins the more specific heading after it, so "Changes" and its first file do
+// not become two nearly empty chunks.
+function planChunks(root) {
+  const chunks = [];
+  let current = null;
+
+  for (const el of root.children) {
+    const level = headingLevel(el);
+    if (level) {
+      const hasBody = current && current.elements.some((item) => !headingLevel(item));
+      if (!current || hasBody || level <= current.lastHeading) {
+        current = { elements: [], headings: [], lastHeading: level };
+        chunks.push(current);
+      } else {
+        current.lastHeading = level;
+      }
+      current.headings.push(el.textContent.trim());
+    } else if (!current) {
+      current = { elements: [], headings: [], lastHeading: 0 };
+      chunks.push(current);
+    }
+    current.elements.push(el);
+  }
+
+  chunks.forEach((chunk, index) => {
+    chunk.index = index;
+    chunk.title = chunk.headings.join(" — ") || "Plan";
+    chunk.elements.forEach((el) => (el.dataset.chunk = String(index)));
+  });
+  return chunks;
+}
+
+function cleanSpeech(text) {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+function blockSpeech(el) {
+  if (el.tagName === "PRE") return "";
+  const copy = el.cloneNode(true);
+  copy.querySelectorAll("pre, script, style").forEach((node) => node.remove());
+
+  if (copy.tagName === "UL" || copy.tagName === "OL") {
+    return Array.from(copy.children).map((item) => cleanSpeech(item.textContent)).filter(Boolean).join(". ");
+  }
+  if (copy.tagName === "TABLE") {
+    return Array.from(copy.querySelectorAll("tr"))
+      .map((row) => Array.from(row.children).map((cell) => cleanSpeech(cell.textContent)).join(", "))
+      .filter(Boolean)
+      .join(". ");
+  }
+  return cleanSpeech(copy.textContent);
+}
+
+function chunkSpeech(chunk) {
+  const text = chunk.elements.map(blockSpeech).filter(Boolean).join(". ");
+  return text || chunk.title;
+}
+
+function stopNarration() {
+  narration.generation += 1;
+  narration.playing = false;
+  narration.paused = false;
+  if (canSpeak) window.speechSynthesis.cancel();
+}
+
+function syncPresentation() {
+  const doc = $("doc");
+  doc.classList.toggle("guided", narration.guided);
+  narration.chunks.forEach((chunk) => {
+    const active = narration.guided && chunk.index === narration.index;
+    chunk.elements.forEach((el) => el.classList.toggle("chunk-active", active));
+  });
+
+  const count = narration.chunks.length;
+  const current = narration.chunks[narration.index];
+  const progress = $("progress");
+  progress.textContent = narration.guided && count ? narration.index + 1 + " / " + count : "";
+  progress.title = current ? current.title : "";
+  progress.setAttribute("aria-label", current
+    ? "Chunk " + (narration.index + 1) + " of " + count + ": " + current.title
+    : "No plan chunks");
+
+  $("previous").disabled = !narration.guided || narration.index <= 0;
+  $("next").disabled = !narration.guided || narration.index >= count - 1;
+  $("play").disabled = !canSpeak || !narration.guided || count === 0;
+  $("play").textContent = narration.paused ? "Resume" : narration.playing ? "Pause" : "Listen";
+  $("play").title = canSpeak ? "Read this plan aloud" : "This browser cannot read text aloud";
+  $("voice").disabled = !canSpeak || narrationVoices().length === 0;
+  $("rate").disabled = !canSpeak;
+  $("viewmode").textContent = narration.guided ? "Show all" : "Present";
+  renderGutter();
+}
+
+function focusChunk() {
+  const chunk = narration.chunks[narration.index];
+  if (!chunk || !chunk.elements[0]) return;
+  chunk.elements[0].scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+function speakCurrent() {
+  const chunk = narration.chunks[narration.index];
+  if (!canSpeak || !chunk || !narration.guided || !narration.playing) return;
+
+  const generation = ++narration.generation;
+  const utterance = new SpeechSynthesisUtterance(chunkSpeech(chunk));
+  const voice = selectedVoice();
+  if (voice) {
+    utterance.voice = voice;
+    utterance.lang = voice.lang;
+  }
+  utterance.rate = narration.rate;
+  utterance.onend = () => {
+    if (generation !== narration.generation || !narration.playing) return;
+    if (narration.index < narration.chunks.length - 1) {
+      narration.index += 1;
+      syncPresentation();
+      focusChunk();
+      speakCurrent();
+      return;
+    }
+    narration.playing = false;
+    narration.paused = false;
+    syncPresentation();
+  };
+  utterance.onerror = () => {
+    if (generation !== narration.generation) return;
+    narration.playing = false;
+    narration.paused = false;
+    syncPresentation();
+    toast("Narration stopped.");
+  };
+  window.speechSynthesis.speak(utterance);
+  syncPresentation();
+}
+
+function toggleNarration() {
+  if (!canSpeak || !narration.guided) return;
+  if (narration.paused) {
+    narration.paused = false;
+    narration.playing = true;
+    window.speechSynthesis.resume();
+    return syncPresentation();
+  }
+  if (narration.playing) {
+    narration.paused = true;
+    window.speechSynthesis.pause();
+    return syncPresentation();
+  }
+  narration.playing = true;
+  speakCurrent();
+}
+
+function moveChunk(offset) {
+  const target = Math.max(0, Math.min(narration.index + offset, narration.chunks.length - 1));
+  if (target === narration.index) return;
+  const keepReading = narration.playing && !narration.paused;
+  stopNarration();
+  narration.index = target;
+  syncPresentation();
+  focusChunk();
+  if (keepReading) {
+    narration.playing = true;
+    speakCurrent();
+  }
+}
+
+function preparePresentation(root, view) {
+  view = view || {};
+  stopNarration();
+  narration.chunks = planChunks(root);
+  narration.index = Math.max(0, Math.min(Number(view.index) || 0, narration.chunks.length - 1));
+  narration.guided = view.guided !== false;
+  syncPresentation();
+}
+
 // Give every top-level block a stable name, so a comment can point at it.
 // The name is the enclosing heading plus the block's place under it.
 function anchorBlocks(root) {
@@ -183,8 +490,82 @@ function anchorBlocks(root) {
   }
 }
 
-function renderDoc(markdown) {
+function syncReplanGate() {
+  const open = state.comments.filter(isOpen).length;
+  const diagramFailed = diagramCheck.status === "failed" &&
+    Number(diagramCheck.revision) === Number(viewing) &&
+    Number(viewing) === Number(state.meta.current_revision);
+  $("replan").disabled = (open === 0 && !diagramFailed) || state.meta.status !== "review";
+  $("replan").textContent = diagramFailed && open === 0
+    ? "Repair diagrams"
+    : open ? "Replan (" + open + ")" : "Replan";
+}
+
+function syncDiagramGate() {
+  const badge = $("diagram-status");
+  badge.classList.remove("ok", "error");
+  badge.title = diagramCheck.error || "";
+
+  if (diagramCheck.status === "passed") {
+    badge.classList.add("ok");
+    badge.textContent = diagramCheck.count
+      ? diagramCheck.count + (diagramCheck.count === 1 ? " diagram rendered" : " diagrams rendered")
+      : "No diagrams";
+  } else if (diagramCheck.status === "failed") {
+    badge.classList.add("error");
+    badge.textContent = "Diagram check failed";
+  } else {
+    badge.textContent = "Checking diagrams";
+  }
+
+  const currentRevision = Number(viewing) === Number(state.meta.current_revision);
+  const checkedRevision = Number(diagramCheck.revision) === Number(viewing);
+  const passed = checkedRevision && diagramCheck.status === "passed";
+  const accept = $("accept");
+  accept.disabled = state.meta.status !== "review" || !state.revision || !currentRevision || !passed;
+  if (!currentRevision) {
+    accept.title = "Open the current revision before approval";
+  } else if (!passed) {
+    accept.title = diagramCheck.status === "failed"
+      ? "Fix every Mermaid diagram before approval"
+      : "Wait for the Mermaid rendering check";
+  } else {
+    accept.title = "Approve this rendered plan and start implementation";
+  }
+  syncReplanGate();
+}
+
+async function verifyDiagramRendering(nodes, generation) {
+  let active = null;
+  try {
+    if (typeof mermaid === "undefined") throw new Error("The Mermaid renderer did not load.");
+    for (let index = 0; index < nodes.length; index += 1) {
+      active = nodes[index];
+      const source = active.textContent;
+      const rendered = await mermaid.render("flow-diagram-" + generation + "-" + index, source);
+      if (generation !== diagramCheck.generation) return;
+      active.innerHTML = rendered.svg;
+      if (rendered.bindFunctions) rendered.bindFunctions(active);
+      if (!active.querySelector("svg")) throw new Error("Mermaid did not produce SVG.");
+      active.dataset.rendered = "true";
+      active = null;
+    }
+    if (generation !== diagramCheck.generation) return;
+    diagramCheck.status = "passed";
+    syncDiagramGate();
+  } catch (error) {
+    if (generation !== diagramCheck.generation) return;
+    if (active) active.classList.add("error");
+    diagramCheck.status = "failed";
+    diagramCheck.error = error && error.message ? error.message : String(error);
+    syncDiagramGate();
+    toast("A Mermaid diagram failed to render. Fix it before approval.");
+  }
+}
+
+function renderDoc(markdown, view) {
   const doc = $("doc");
+  doc.classList.toggle("guided", view.guided !== false);
   doc.innerHTML = marked.parse(markdown || "*This plan has no document yet.*");
 
   // marked turns a mermaid fence into <pre><code class="language-mermaid">.
@@ -196,13 +577,21 @@ function renderDoc(markdown) {
     code.parentElement.replaceWith(pre);
   });
 
-  anchorBlocks(doc);
+  const diagrams = Array.from(doc.querySelectorAll("pre.mermaid"));
+  const generation = diagramCheck.generation + 1;
+  diagramCheck = {
+    generation,
+    revision: Number(viewing) || 0,
+    status: diagrams.length ? "checking" : "passed",
+    count: diagrams.length,
+    error: "",
+  };
+  syncDiagramGate();
 
-  if (doc.querySelector("pre.mermaid")) {
-    mermaid.run({ querySelector: "pre.mermaid" }).catch(() => {
-      toast("A diagram would not render.");
-    });
-  }
+  anchorBlocks(doc);
+  preparePresentation(doc, view);
+
+  if (diagrams.length) verifyDiagramRendering(diagrams, generation).then(renderGutter);
 }
 
 function isOpen(c) {
@@ -213,9 +602,16 @@ function renderGutter() {
   const gutter = $("gutter");
   gutter.innerHTML = "";
 
-  const mine = state.comments.filter((c) => Number(c.revision) === Number(viewing) || isOpen(c));
+  let mine = state.comments.filter((c) => Number(c.revision) === Number(viewing) || isOpen(c));
+  if (narration.guided) {
+    mine = mine.filter((c) => {
+      const target = $("doc").querySelector('[data-anchor="' + CSS.escape(c.anchor || "") + '"]');
+      return target && Number(target.dataset.chunk) === narration.index;
+    });
+  }
   if (!mine.length) {
-    gutter.innerHTML = '<p class="empty">Select any text in the document to leave a comment.</p>';
+    gutter.innerHTML = '<p class="empty">Select text in ' +
+      (narration.guided ? "this chunk" : "the document") + " to leave a comment.</p>";
   }
 
   // Highlight what is commented on, and line each card up with its block.
@@ -244,7 +640,7 @@ function renderGutter() {
       del.className = "ghost";
       del.textContent = "Delete";
       del.onclick = () =>
-        api("/comment/" + c.id, { method: "DELETE" }).then(load).catch((e) => toast(e.message));
+        api("/comment/" + c.id, { method: "DELETE" }).then(() => load(viewing)).catch((e) => toast(e.message));
       card.querySelector(".foot").appendChild(del);
     }
 
@@ -275,19 +671,21 @@ function renderHeader() {
   }
   sel.style.display = state.revisions.length > 1 ? "" : "none";
 
-  const open = state.comments.filter(isOpen).length;
-  $("replan").disabled = open === 0 || state.meta.status === "planning";
-  $("replan").textContent = open ? "Replan (" + open + ")" : "Replan";
-  $("accept").disabled = state.meta.status === "planning" || !state.revision;
+  syncDiagramGate();
 }
 
 function load(rev) {
   const q = rev ? "?revision=" + rev : "";
   return api(q)
     .then((data) => {
+      const nextRevision = data.revision ? data.revision.n : 0;
+      const sameRevision = Number(viewing) === Number(nextRevision);
+      const view = sameRevision
+        ? { index: narration.index, guided: narration.guided }
+        : { index: 0, guided: true };
       state = data;
-      viewing = data.revision ? data.revision.n : 0;
-      renderDoc(data.revision && data.revision.plan_md);
+      viewing = nextRevision;
+      renderDoc(data.revision && data.revision.plan_md, view);
       renderHeader();
       renderGutter();
     })
@@ -391,20 +789,88 @@ document.addEventListener("keydown", (ev) => {
 
 // --- actions ----------------------------------------------------------------
 
+populateVoices();
+if (canSpeak) window.speechSynthesis.addEventListener("voiceschanged", populateVoices);
+$("rate").value = String(narration.rate);
+$("play").onclick = toggleNarration;
+$("previous").onclick = () => moveChunk(-1);
+$("next").onclick = () => moveChunk(1);
+$("viewmode").onclick = () => {
+  stopNarration();
+  narration.guided = !narration.guided;
+  syncPresentation();
+  if (narration.guided) focusChunk();
+};
+$("voice").onchange = (ev) => {
+  const keepReading = narration.playing && !narration.paused;
+  stopNarration();
+  narration.voiceURI = ev.target.value;
+  try {
+    if (narration.voiceURI) localStorage.setItem(VOICE_KEY, narration.voiceURI);
+    else localStorage.removeItem(VOICE_KEY);
+  } catch {}
+  syncPresentation();
+  if (keepReading) {
+    narration.playing = true;
+    speakCurrent();
+  }
+};
+$("rate").onchange = (ev) => {
+  const keepReading = narration.playing && !narration.paused;
+  stopNarration();
+  narration.rate = Number(ev.target.value) || 1;
+  try {
+    localStorage.setItem(RATE_KEY, String(narration.rate));
+  } catch {}
+  syncPresentation();
+  if (keepReading) {
+    narration.playing = true;
+    speakCurrent();
+  }
+};
+
 $("refresh").onclick = () => load(viewing);
 $("revsel").onchange = (ev) => load(ev.target.value);
 
 $("replan").onclick = () => {
   $("replan").disabled = true;
-  api("/replan", { method: "POST" })
+  const open = state.comments.filter(isOpen).length;
+  const diagramFailed = diagramCheck.status === "failed" &&
+    Number(diagramCheck.revision) === Number(viewing);
+  const prepare = diagramFailed && open === 0
+    ? api("/comment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          anchor: "diagrams#0",
+          quote: "Mermaid rendering check failed",
+          body: "Fix every Mermaid diagram so Mermaid 11 renders each one as SVG. Renderer error: " +
+            (diagramCheck.error || "unknown rendering error"),
+          revision: viewing,
+        }),
+      })
+    : Promise.resolve();
+  prepare.then(() => api("/replan", { method: "POST" }))
     .then(() => toast("Claude is revising the plan. This page refreshes when it lands."))
-    .catch((e) => toast(e.message));
+    .catch((e) => {
+      $("replan").disabled = false;
+      toast(e.message);
+    });
 };
 
 $("accept").onclick = () => {
+  if (diagramCheck.status !== "passed" || Number(diagramCheck.revision) !== Number(viewing)) return;
   $("accept").disabled = true;
-  api("/accept", { method: "POST" })
-    .then(() => toast("Plan accepted. Go back to Neovim — the change stack is building."))
+  api("/accept", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      revision: viewing,
+      diagram_check: "passed",
+      diagram_count: diagramCheck.count,
+    }),
+  })
+    .then(() => toast("Plan accepted. Claude is implementing it in an isolated worktree."))
     .catch((e) => {
       $("accept").disabled = false;
       toast(e.message);
@@ -413,12 +879,14 @@ $("accept").onclick = () => {
 
 // --- start ------------------------------------------------------------------
 
-mermaid.initialize({
-  startOnLoad: false,
-  securityLevel: "strict",
-  theme: window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "neutral",
-  fontFamily: "ui-sans-serif, system-ui, sans-serif",
-});
+if (typeof mermaid !== "undefined") {
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "strict",
+    theme: window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "neutral",
+    fontFamily: "ui-sans-serif, system-ui, sans-serif",
+  });
+}
 
 load();
 
@@ -435,6 +903,7 @@ setInterval(() => {
 }, 4000);
 
 window.addEventListener("resize", () => renderGutter());
+window.addEventListener("beforeunload", stopNarration);
 </script>
 </body>
 </html>

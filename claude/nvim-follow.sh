@@ -68,6 +68,16 @@ ask() {
 case "$event" in
 
   UserPromptSubmit)
+    if [ -n "${CLAUDE_NVIM_FLOW_ID:-}" ]; then
+      message=$(printf '%s' "$payload" | jq -c --arg p "$CLAUDE_NVIM_FLOW_ID" '{
+        plan_id: $p,
+        cwd: (.cwd // ""),
+        prompt: (.prompt // "")
+      }')
+      encoded=$(printf '%s' "$message" | base64 | tr -d '\n')
+      ask "v:lua.require'flow.implementation'.prompt_submitted('${encoded}')" >/dev/null || true
+      exit 0
+    fi
     # Give Claude the editor state with every prompt.
     encoded=$(ask "v:lua.require'claude.context'.gather_encoded()") || exit 0
     [ -z "$encoded" ] && exit 0
@@ -190,6 +200,27 @@ case "$event" in
     ;;
 
   Stop)
+    if [ -n "${CLAUDE_NVIM_FLOW_ID:-}" ]; then
+      message=$(printf '%s' "$payload" | jq -c --arg p "$CLAUDE_NVIM_FLOW_ID" '{
+        plan_id: $p,
+        cwd: (.cwd // ""),
+        session_id: (.session_id // ""),
+        summary: (.last_assistant_message // .message // "")
+      }')
+      encoded=$(printf '%s' "$message" | base64 | tr -d '\n')
+      decision=$(ask "v:lua.require'flow.implementation'.stop('${encoded}')") || exit 0
+      case "$decision" in
+        continue:*)
+          reason=${decision#continue:}
+          jq -n --arg reason "$reason" '{
+            hookSpecificOutput: { hookEventName: "Stop", permissionDecision: "deny" },
+            systemMessage: $reason
+          }'
+          ;;
+      esac
+      exit 0
+    fi
+
     send "$(jq -nc '{kind:"status", status:"idle", level:"INFO", message:"Claude finished."}')"
 
     # Keep going until green. Opt in by adding an executable .claude/check.sh

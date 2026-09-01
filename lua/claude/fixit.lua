@@ -82,10 +82,14 @@ end
 --- The prompt ---------------------------------------------------------------
 
 local RULES = table.concat({
-  "Edit the file directly with the Edit tool. Make the smallest change that",
-  "clears this diagnostic. Do not fix anything else. Do not touch another",
-  "file. Do not run commands. Do not explain. Reply with one short line",
-  "saying what you changed.",
+  "Resolve this diagnostic completely. Inspect the surrounding project and",
+  "dependency manifests before choosing a fix. Use Bash when local project",
+  "state or a command is needed to diagnose or verify it. If a missing",
+  "dependency or type package is the correct fix, install it with the",
+  "project's existing package manager. Keep the change focused on this",
+  "diagnostic, but update related manifests and lockfiles when required.",
+  "Do not fix unrelated issues. Verify the fix when practical. Reply with",
+  "one short line saying what you changed.",
 }, "\n")
 
 local function build_prompt(relpath, diagnostics, snippet)
@@ -148,7 +152,7 @@ function M.fix(opts)
     prompt = build_prompt(relpath, described, code_window(bufnr, target_line)),
     title = title,
     bufnr = bufnr,
-    tools = "Read,Edit",
+    tools = "Read,Edit,Grep,Glob,Bash",
   })
 end
 

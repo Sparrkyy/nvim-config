@@ -14,7 +14,6 @@ local hud = require("claude.hud")
 
 M.opts = {
   command = "claude", -- the tests replace M.spawn instead
-  model = "opus",
   timeout_ms = 900000, -- planning a real change takes a while
   max_concurrent = 4,
 }
@@ -169,8 +168,6 @@ function M.command(spec)
     "stream-json",
     "--include-partial-messages",
     "--verbose",
-    "--model",
-    spec.model or M.opts.model,
     "--permission-mode",
     spec.permission_mode or "plan",
     "--tools",
@@ -199,7 +196,7 @@ end
 ---@param spec table {
 ---   prompt: string,
 ---   title: string|nil,           shown in the window
----   model, tools, permission_mode, max_turns, append_system_prompt,
+---   tools, permission_mode, max_turns, append_system_prompt,
 ---   json_schema: table|nil,      ask for structured output
 ---   cwd: string|nil,
 ---   on_done: function|nil,       (ok, result_text, info)

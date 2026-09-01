@@ -12,6 +12,16 @@ local ICON = {
   review = "󰈙",
   accepted = "󰄬",
   applying = "󰐅",
+  provisioning = "󰔟",
+  implementing = "󰐅",
+  revising = "󰜺",
+  review_ready = "󰈙",
+  reviewing = "󰈙",
+  merge_ready = "󰄬",
+  merging = "󰆧",
+  merged = "󰄲",
+  implementation_failed = "󰅖",
+  merge_failed = "󰅖",
   done = "󰄲",
   abandoned = "󰅖",
 }
@@ -39,9 +49,10 @@ end
 --- Act on the plan you picked.
 local function choose(meta)
   require("flow").select(meta.id, meta.cwd)
-  if meta.status == "applying" then
-    require("flow.stack").toggle_panel()
-    require("flow.stack").next()
+  if meta.status == "implementing" or meta.status == "revising" or meta.status == "provisioning" then
+    require("flow.implementation").open(meta.id)
+  elseif meta.status == "review_ready" or meta.status == "reviewing" or meta.status == "merge_ready" then
+    require("flow.review").open(meta.id)
   else
     require("flow").open(meta.id)
   end
