@@ -111,6 +111,28 @@ describe("follow.handle", function()
     assert.equals("remove me", removed)
   end)
 
+  it("queues each changed hunk as its own replay step", function()
+    follow.pace_ms = 5000
+    local path = H.write_file(dir, "hunks.lua", {
+      "head", "old one", "keep a", "keep b", "keep c", "old two", "tail",
+    })
+    follow.handle(H.encode({
+      kind = "open", event = "PreToolUse", tool = "Edit", write = true,
+      path = path, needle = "old one",
+    }))
+    H.write_file(dir, "hunks.lua", {
+      "head", "new one", "keep a", "keep b", "keep c", "new two", "tail",
+    })
+
+    follow.handle(H.encode({
+      kind = "open", event = "PostToolUse", tool = "Edit", write = true,
+      path = path, added = { "new one", "new two" },
+    }))
+
+    assert.equals(3, follow.queue_length())
+    follow.clear_queue()
+  end)
+
   it("lingers, fades, and then clears animated changes", function()
     follow.change_linger_ms = 30
     follow.change_fade_ms = 90

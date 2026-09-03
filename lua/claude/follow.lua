@@ -12,6 +12,7 @@ local mark_ns = vim.api.nvim_create_namespace("claude_changes")
 local registry_dir = vim.fn.stdpath("cache") .. "/claude-follow"
 local pending_changes = {}
 local mark_epoch = 0
+local enqueue_replay
 
 M.enabled = true
 M.highlight_changes = true
@@ -428,43 +429,64 @@ local function diff_hunks(before, after)
   return { { 1, #before, 1, #after } }
 end
 
-local function draw_diff(bufnr, before, after)
+local function draw_hunk(bufnr, before, hunk)
   local records = {}
-  local first_changed
   local total = vim.api.nvim_buf_line_count(bufnr)
-  for _, hunk in ipairs(diff_hunks(before, after)) do
-    local old_start = math.max(tonumber(hunk[1]) or 1, 1)
-    local old_count = math.max(tonumber(hunk[2]) or 0, 0)
-    local new_start = math.max(tonumber(hunk[3]) or 1, 1)
-    local new_count = math.max(tonumber(hunk[4]) or 0, 0)
-    first_changed = first_changed or math.max(1, math.min(new_start, total))
+  local old_start = math.max(tonumber(hunk[1]) or 1, 1)
+  local old_count = math.max(tonumber(hunk[2]) or 0, 0)
+  local new_start = math.max(tonumber(hunk[3]) or 1, 1)
+  local new_count = math.max(tonumber(hunk[4]) or 0, 0)
 
-    if old_count > 0 then
-      local removed = {}
-      for line = old_start, math.min(old_start + old_count - 1, #before) do
-        table.insert(removed, before[line])
-      end
-      add_deleted_record(bufnr, removed, new_start, new_count, total, records)
+  if old_count > 0 then
+    local removed = {}
+    for line = old_start, math.min(old_start + old_count - 1, #before) do
+      table.insert(removed, before[line])
     end
-    if new_count > 0 then
-      add_line_records(bufnr, new_start, new_count, total, records)
-    end
+    add_deleted_record(bufnr, removed, new_start, new_count, total, records)
+  end
+  if new_count > 0 then
+    add_line_records(bufnr, new_start, new_count, total, records)
   end
   animate_records(records)
-  return first_changed, #records > 0
 end
 
-local function draw_added_chunks(bufnr, path, chunks)
-  local records = {}
+local function replay_diff(path, bufnr, before, after)
+  local first_changed
+  local queued = false
   local total = vim.api.nvim_buf_line_count(bufnr)
+  for _, source_hunk in ipairs(diff_hunks(before, after)) do
+    local hunk = { source_hunk[1], source_hunk[2], source_hunk[3], source_hunk[4] }
+    local line = math.max(1, math.min(tonumber(hunk[3]) or 1, total))
+    first_changed = first_changed or line
+    local result = enqueue_replay(path, line, function()
+      if M.highlight_changes and vim.api.nvim_buf_is_valid(bufnr) then
+        draw_hunk(bufnr, before, hunk)
+      end
+    end)
+    queued = queued or result == "queued" or result == "ok"
+  end
+  return first_changed, queued
+end
+
+local function replay_added_chunks(bufnr, path, chunks)
+  local queued = false
   for _, chunk in ipairs(chunks) do
     local start, count = chunk_range(path, chunk)
     if start then
-      add_line_records(bufnr, start, count, total, records)
+      local first = start
+      local line_count = count
+      local result = enqueue_replay(path, first, function()
+        if not M.highlight_changes or not vim.api.nvim_buf_is_valid(bufnr) then
+          return
+        end
+        local records = {}
+        add_line_records(bufnr, first, line_count, vim.api.nvim_buf_line_count(bufnr), records)
+        animate_records(records)
+      end)
+      queued = queued or result == "queued" or result == "ok"
     end
   end
-  animate_records(records)
-  return #records > 0
+  return queued
 end
 
 --- Highlight the lines Claude just wrote in a file.
@@ -487,7 +509,7 @@ function M.mark(path, chunks)
     if not vim.api.nvim_buf_is_valid(bufnr) then
       return
     end
-    draw_added_chunks(bufnr, full, chunks)
+    replay_added_chunks(bufnr, full, chunks)
     vim.cmd("redraw")
   end)
 end
@@ -527,15 +549,12 @@ local function finish_change(path, fallback_chunks)
   end
 
   refresh_buffer(bufnr)
-  local first_changed, animated
-  if M.highlight_changes then
-    first_changed, animated = draw_diff(bufnr, before, after)
-    if not animated and type(fallback_chunks) == "table" and #fallback_chunks > 0 then
-      draw_added_chunks(bufnr, full, fallback_chunks)
-    end
+  local first_changed, replayed = replay_diff(full, bufnr, before, after)
+  if not replayed and type(fallback_chunks) == "table" and #fallback_chunks > 0 then
+    replayed = replay_added_chunks(bufnr, full, fallback_chunks)
   end
   vim.cmd("redraw")
-  return first_changed or (pending and pending.line or nil)
+  return first_changed or (pending and pending.line or nil), replayed
 end
 
 --- Remove the marks. Pass a buffer, or nothing to clear every buffer.
@@ -562,15 +581,33 @@ end
 
 --- Pacing -------------------------------------------------------------------
 -- Claude edits faster than you can read. Queue the jumps and replay them one
--- at a time, so each file stays on screen long enough to review.
+-- at a time, so every change hunk and file transition gets a full beat.
 
-M.pace_ms = 900 -- gap between jumps. Set to 0 to follow at full speed.
+M.pace_ms = 1000 -- gap between change hunks. Set to 0 to follow at full speed.
 
 local queue = {}
 local timer = nil
-local MAX_QUEUE = 40
+local last_replay_at = nil
+local drain
 
-local function drain()
+local function now_ms()
+  return uv.hrtime() / 1000000
+end
+
+local function schedule_drain(delay)
+  if timer or #queue == 0 then
+    return
+  end
+  if delay == nil then
+    delay = 0
+    if M.pace_ms > 0 and last_replay_at then
+      delay = math.max(0, math.ceil(M.pace_ms - (now_ms() - last_replay_at)))
+    end
+  end
+  timer = vim.defer_fn(drain, delay)
+end
+
+drain = function()
   timer = nil
   local item = queue[1]
   if not item then
@@ -578,6 +615,7 @@ local function drain()
   end
 
   local result = show(item.path, item.line)
+  local replayed = false
 
   -- "busy" means you are mid-edit. "reviewing" means a diff is open. Both are
   -- your turn, not Claude's, so hold the jump and try again shortly.
@@ -588,18 +626,26 @@ local function drain()
     end
   else
     table.remove(queue, 1)
+    if result == "ok" then
+      replayed = true
+      if item.on_show then
+        pcall(item.on_show)
+      end
+      last_replay_at = now_ms()
+    end
   end
 
   if #queue > 0 then
-    timer = vim.defer_fn(drain, M.pace_ms > 0 and M.pace_ms or 100)
+    if replayed then
+      schedule_drain()
+    else
+      schedule_drain(100)
+    end
   end
   pcall(vim.cmd, "redrawstatus")
 end
 
---- Queue a jump. The hook calls this, so it must return at once.
----@param path string
----@param line number|nil
-function M.open(path, line)
+enqueue_replay = function(path, line, on_show)
   if not M.enabled then
     return "disabled"
   end
@@ -607,23 +653,28 @@ function M.open(path, line)
     return "nopath"
   end
   if M.pace_ms <= 0 then
-    return show(path, line)
+    local result = show(path, line)
+    if result == "ok" and on_show then
+      pcall(on_show)
+    end
+    return result
   end
 
-  -- Claude often touches the same place twice in a row. Show it once.
   local last = queue[#queue]
-  if last and last.path == path and last.line == line then
+  if not on_show and last and not last.on_show and last.path == path and last.line == line then
     return "queued"
   end
 
-  table.insert(queue, { path = path, line = line })
-  if #queue > MAX_QUEUE then
-    table.remove(queue, 1) -- drop the oldest, so you never fall far behind
-  end
-  if not timer then
-    timer = vim.defer_fn(drain, 0)
-  end
+  table.insert(queue, { path = path, line = line, on_show = on_show })
+  schedule_drain()
   return "queued"
+end
+
+--- Queue a jump. The hook calls this, so it must return at once.
+---@param path string
+---@param line number|nil
+function M.open(path, line)
+  return enqueue_replay(path, line)
 end
 
 --- How many jumps are waiting. The statusline and the tests read this.
@@ -634,6 +685,7 @@ end
 --- Drop every pending jump and stop the replay.
 function M.clear_queue()
   queue = {}
+  last_replay_at = nil
   if timer then
     pcall(function() timer:stop() end)
     timer = nil
@@ -726,12 +778,18 @@ function M.handle(encoded)
       local event = present(data.event)
       local added = present(data.added)
       local is_write = writes_file(data.tool, present(data.write))
+      local replayed = false
       if path and event == "PreToolUse" and is_write then
         prepare_change(path, line)
       elseif path and event == "PostToolUse" and is_write then
-        line = finish_change(path, added) or line
+        local changed_line
+        changed_line, replayed = finish_change(path, added)
+        line = changed_line or line
       elseif path and type(added) == "table" and #added > 0 then
         M.mark(path, added)
+      end
+      if replayed then
+        return M.pace_ms <= 0 and "ok" or "queued"
       end
       return M.open(path, line)
     elseif kind == "quickfix" then

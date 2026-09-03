@@ -39,6 +39,12 @@ describe("flow.planner", function()
     assert.is_truthy(planner.DOC_CONTRACT:match("blocks approval"))
   end)
 
+  it("asks for compact diff snippets that the plan page can animate", function()
+    assert.is_truthy(planner.DOC_CONTRACT:match("```diff"))
+    assert.is_truthy(planner.DOC_CONTRACT:match("before%-and%-after"))
+    assert.is_truthy(planner.DOC_CONTRACT:match("animates these changes"))
+  end)
+
   it("asks for language that works when the browser narrates it", function()
     assert.is_truthy(planner.DOC_CONTRACT:match("reads one section aloud"))
     assert.is_truthy(planner.DOC_CONTRACT:match("Define each technical term"))

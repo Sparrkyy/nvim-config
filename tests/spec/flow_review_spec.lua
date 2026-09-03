@@ -69,7 +69,7 @@ describe("flow.review", function()
     assert.is_truthy(context:match("@@ %-1 %+1 @@"))
   end)
 
-  it("opens one editable buffer with the base deletion rendered inline", function()
+  it("shows the selected base deletion inline with enhanced word changes", function()
     local diffopt = vim.o.diffopt
     H.capture_notify(function()
       assert.is_true(review.open(plan_id))
@@ -90,17 +90,195 @@ describe("flow.review", function()
     assert.is_true(target > 0)
     assert.is_true(vim.bo[target].modifiable)
     assert.is_false(vim.bo[target].readonly)
-    local saw_deleted = false
+    H.settle()
+    local saw_deleted_inline = false
+    local saw_change_header = false
+    local saw_old_word = false
+    local saw_old_context = false
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(target, review.diff_ns, 0, -1, { details = true })) do
       for _, virtual in ipairs(mark[4].virt_lines or {}) do
+        local text = ""
         for _, chunk in ipairs(virtual) do
-          saw_deleted = saw_deleted or tostring(chunk[1]):match("local value = 1") ~= nil
+          text = text .. tostring(chunk[1])
+          saw_change_header = saw_change_header or tostring(chunk[1]):match("CHANGE 1/1 · %+1 −1") ~= nil
+          saw_old_word = saw_old_word or chunk[1] == "1" and chunk[2] == "FlowReviewDeleteText"
+          saw_old_context = saw_old_context or chunk[1] == "local value = " and chunk[2] == "FlowReviewDelete"
+        end
+        saw_deleted_inline = saw_deleted_inline or text == "local value = 1"
+      end
+    end
+    assert.is_true(saw_deleted_inline)
+    assert.is_true(saw_change_header)
+    assert.is_true(saw_old_word)
+    assert.is_true(saw_old_context)
+    local saw_new_word = false
+    local floating_windows = 0
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(target, review.diff_ns, 0, -1, { details = true })) do
+      if mark[4].hl_group == "FlowReviewAddText" and mark[2] == 0 then
+        saw_new_word = mark[3] == 14 and mark[4].end_col == 15
+      end
+    end
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      local config = vim.api.nvim_win_get_config(win)
+      if config.relative ~= "" then
+        floating_windows = floating_windows + 1
+      end
+    end
+    assert.is_true(saw_new_word)
+    assert.equals(0, floating_windows)
+    assert.is_truthy(vim.o.statusline:match("flow.review"))
+    assert.equals("reviewing", store.meta(plan_id, cwd).status)
+  end)
+
+  it("cleans source metadata and keeps long deleted code inline", function()
+    local old_line = "\239\187\191local value = " .. string.rep("important_name + ", 12) .. "0"
+    worktree.git = function(_, args)
+      if args[1] == "diff" and args[2] == "--name-status" then
+        return { ok = true, out = "M\tlua/a.lua", err = "" }
+      end
+      if args[1] == "diff" then
+        return { ok = true, out = "@@ -1 +1 @@ change value", err = "" }
+      end
+      if args[1] == "show" then
+        return { ok = true, out = old_line .. "\nreturn value", err = "" }
+      end
+      if args[1] == "ls-files" then
+        return { ok = true, out = "", err = "" }
+      end
+      return { ok = false, out = "", err = "unexpected" }
+    end
+    H.capture_notify(function()
+      assert.is_true(review.open(plan_id))
+    end)
+    H.settle()
+    local target = vim.fn.bufnr(workdir .. "/lua/a.lua")
+    local deleted
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(target, review.diff_ns, 0, -1, { details = true })) do
+      for _, virtual in ipairs(mark[4].virt_lines or {}) do
+        local text = ""
+        for _, chunk in ipairs(virtual) do
+          text = text .. tostring(chunk[1])
+        end
+        if text:match("^local value") then
+          deleted = text
         end
       end
     end
-    assert.is_true(saw_deleted)
-    assert.is_truthy(vim.o.statusline:match("flow.review"))
-    assert.equals("reviewing", store.meta(plan_id, cwd).status)
+    assert.equals("local value = " .. string.rep("important_name + ", 12) .. "0", deleted)
+    assert.equals(1, #vim.api.nvim_tabpage_list_wins(0))
+  end)
+
+  it("shows a deleted-file label after K moves into an empty deleted file", function()
+    local deleted = "src/SimpleDebitCommand.cs"
+    vim.fn.mkdir(workdir .. "/src", "p")
+    worktree.git = function(_, args)
+      if args[1] == "diff" and args[2] == "--name-status" then
+        return { ok = true, out = "M\tlua/a.lua\nD\t" .. deleted, err = "" }
+      end
+      if args[1] == "diff" then
+        if args[#args] == deleted then
+          return { ok = true, out = "@@ -1,2 +0,0 @@ deleted file", err = "" }
+        end
+        return { ok = true, out = "@@ -1 +1 @@ change value", err = "" }
+      end
+      if args[1] == "show" then
+        if args[2]:match(":" .. deleted .. "$") then
+          return { ok = true, out = "public sealed class SimpleDebitCommand\n}", err = "" }
+        end
+        return { ok = true, out = "local value = 1\nreturn value", err = "" }
+      end
+      if args[1] == "ls-files" then
+        return { ok = true, out = "", err = "" }
+      end
+      return { ok = false, out = "", err = "unexpected" }
+    end
+    H.capture_notify(function()
+      assert.is_true(review.open(plan_id))
+    end)
+    assert.equals("flowreview", vim.bo.filetype)
+    assert.is_true(review.overview())
+    H.settle()
+    assert.is_true(review.next(plan_id))
+    H.settle()
+    assert.is_truthy(vim.api.nvim_buf_get_name(0):match("SimpleDebitCommand%.cs$"))
+    local label
+    local saw_deleted_code = false
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(0, review.diff_ns, 0, -1, { details = true })) do
+      if mark[4].virt_text then
+        local chunks = {}
+        for _, chunk in ipairs(mark[4].virt_text) do
+          table.insert(chunks, chunk[1])
+        end
+        label = table.concat(chunks)
+      end
+      for _, virtual in ipairs(mark[4].virt_lines or {}) do
+        local text = ""
+        for _, chunk in ipairs(virtual) do
+          text = text .. chunk[1]
+        end
+        saw_deleted_code = saw_deleted_code or text == "public sealed class SimpleDebitCommand"
+      end
+    end
+    assert.equals("  󰆴 SimpleDebitCommand.cs was deleted", label)
+    assert.is_true(saw_deleted_code)
+    vim.api.nvim_buf_set_lines(0, 0, 1, false, { "public sealed class RestoredCommand {}" })
+    vim.api.nvim_exec_autocmds("TextChanged", { buffer = 0 })
+    H.settle()
+    local still_deleted = false
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(0, review.diff_ns, 0, -1, { details = true })) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        still_deleted = still_deleted or chunk[1]:match("was deleted") ~= nil
+      end
+    end
+    assert.is_false(still_deleted)
+  end)
+
+  it("emphasizes renamed words without emphasizing their shared line", function()
+    local old_line = "var legacyPublished = await PublishTrestleMessagesAsync(instructions, result);"
+    local new_line = "var sweepPublished = await PublishTrestleMessagesAsyncV2(instructions, result);"
+    H.write_file(workdir, "lua/a.lua", { new_line })
+    worktree.git = function(_, args)
+      if args[1] == "diff" and args[2] == "--name-status" then
+        return { ok = true, out = "M\tlua/a.lua", err = "" }
+      end
+      if args[1] == "diff" then
+        return { ok = true, out = "@@ -1 +1 @@ rename publish result", err = "" }
+      end
+      if args[1] == "show" then
+        return { ok = true, out = old_line, err = "" }
+      end
+      if args[1] == "ls-files" then
+        return { ok = true, out = "", err = "" }
+      end
+      return { ok = false, out = "", err = "unexpected" }
+    end
+    H.capture_notify(function()
+      assert.is_true(review.open(plan_id))
+    end)
+    H.settle()
+    local target = vim.fn.bufnr(workdir .. "/lua/a.lua")
+    local old_words = {}
+    local new_words = {}
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(target, review.diff_ns, 0, -1, { details = true })) do
+      for _, virtual in ipairs(mark[4].virt_lines or {}) do
+        for _, chunk in ipairs(virtual) do
+          if chunk[2] == "FlowReviewDeleteText" then
+            old_words[chunk[1]] = true
+          end
+        end
+      end
+      if mark[4].hl_group == "FlowReviewAddText" then
+        new_words[new_line:sub(mark[3] + 1, mark[4].end_col)] = true
+      end
+    end
+    assert.same({
+      legacyPublished = true,
+      PublishTrestleMessagesAsync = true,
+    }, old_words)
+    assert.same({
+      sweepPublished = true,
+      PublishTrestleMessagesAsyncV2 = true,
+    }, new_words)
   end)
 
   it("reviews the current branch and local files against the merge base with master", function()
@@ -253,6 +431,8 @@ describe("flow.review", function()
     end
     assert.is_true(lifecycle.BufEnter)
     assert.is_true(lifecycle.BufWritePost)
+    assert.is_true(lifecycle.CursorMoved)
+    assert.is_true(lifecycle.WinScrolled)
     assert.is_nil(lifecycle.User)
   end)
 
@@ -280,11 +460,58 @@ describe("flow.review", function()
     H.capture_notify(function()
       assert.is_true(review.open(plan_id))
     end)
+    H.settle()
+    local target = vim.fn.bufnr(workdir .. "/lua/a.lua")
+    local function visible_deletion()
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(target, review.diff_ns, 0, -1, { details = true })) do
+        for _, virtual in ipairs(mark[4].virt_lines or {}) do
+          local text = ""
+          local deletion = false
+          for _, chunk in ipairs(virtual) do
+            text = text .. tostring(chunk[1])
+            deletion = deletion or chunk[2] == "FlowReviewDelete" or chunk[2] == "FlowReviewDeleteText"
+          end
+          if deletion then
+            return text
+          end
+        end
+      end
+      return nil
+    end
+    assert.equals("local value = 1", visible_deletion())
     assert.same({ 1, 0 }, vim.api.nvim_win_get_cursor(0))
     assert.is_true(review.next(plan_id))
+    H.settle()
     assert.same({ 3, 0 }, vim.api.nvim_win_get_cursor(0))
+    assert.equals("return value", visible_deletion())
     assert.is_true(review.prev(plan_id))
+    H.settle()
     assert.same({ 1, 0 }, vim.api.nvim_win_get_cursor(0))
+    assert.equals("local value = 1", visible_deletion())
+    vim.api.nvim_win_set_cursor(0, { 2, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", {})
+    H.settle()
+    assert.is_nil(visible_deletion())
+  end)
+
+  it("rebuilds the active deletion block while the final code is edited", function()
+    H.capture_notify(function()
+      assert.is_true(review.open(plan_id))
+    end)
+    H.settle()
+    local target = vim.fn.bufnr(workdir .. "/lua/a.lua")
+    vim.api.nvim_buf_set_lines(target, 0, 1, false, { "local value = 1" })
+    vim.api.nvim_exec_autocmds("TextChanged", { buffer = target })
+    H.settle()
+    local saw_deletion = false
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(target, review.diff_ns, 0, -1, { details = true })) do
+      for _, virtual in ipairs(mark[4].virt_lines or {}) do
+        for _, chunk in ipairs(virtual) do
+          saw_deletion = saw_deletion or chunk[2] == "FlowReviewDelete" or chunk[2] == "FlowReviewDeleteText"
+        end
+      end
+    end
+    assert.is_false(saw_deletion)
   end)
 
   it("opens a core-first overview without adding a file-tree split", function()
@@ -341,9 +568,32 @@ describe("flow.review", function()
       end
     end
     assert.equals(1, normal_windows)
+    local floating_windows = 0
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      if vim.api.nvim_win_get_config(win).relative ~= "" then
+        floating_windows = floating_windows + 1
+      end
+    end
+    assert.equals(1, floating_windows)
+    assert.is_true(review.overview())
+    H.settle()
+    local target = vim.fn.bufnr(workdir .. "/lua/core_large.lua")
+    local saw_active_deletion = false
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(target, review.diff_ns, 0, -1, { details = true })) do
+      for _, virtual in ipairs(mark[4].virt_lines or {}) do
+        local text = ""
+        for _, chunk in ipairs(virtual) do
+          text = text .. tostring(chunk[1])
+        end
+        if text == "old one" then
+          saw_active_deletion = true
+        end
+      end
+    end
+    assert.is_true(saw_active_deletion)
   end)
 
-  it("maps J and K only inside review buffers and removes the overrides on close", function()
+  it("maps review navigation locally without taking the editing o key", function()
     H.capture_notify(function()
       assert.is_true(review.open(plan_id))
     end)
@@ -358,12 +608,16 @@ describe("flow.review", function()
     local active = local_maps()
     assert.equals("Flow: previous changed hunk", active.J)
     assert.equals("Flow: next changed hunk", active.K)
+    assert.is_nil(active.o)
+    assert.equals("Flow: toggle review overview", active[" o"] or active["<Space>o"])
 
     assert.is_true(review.close())
 
     local closed = local_maps()
     assert.is_nil(closed.J)
     assert.is_nil(closed.K)
+    assert.is_nil(closed[" o"])
+    assert.is_nil(closed["<Space>o"])
   end)
 
   it("anchors comments in the editable buffer", function()

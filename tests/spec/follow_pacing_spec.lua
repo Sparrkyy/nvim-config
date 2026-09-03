@@ -4,18 +4,23 @@
 local H = require("helpers")
 
 describe("follow pacing", function()
-  local follow, dir
+  local follow, dir, default_pace
 
   before_each(function()
     H.reset_buffers()
     follow = H.reload("claude.follow")
     dir = H.tmpdir()
+    default_pace = follow.pace_ms
     follow.pace_ms = 0 -- most tests set this themselves
     follow.clear_queue()
   end)
 
   after_each(function()
     follow.clear_queue()
+  end)
+
+  it("defaults to one second between replay steps", function()
+    assert.equals(1000, default_pace)
   end)
 
   it("shows the jump at once when pacing is off", function()
@@ -74,6 +79,25 @@ describe("follow pacing", function()
     assert.equals(b, H.current_file())
   end)
 
+  it("keeps the gap when a jump arrives after the queue became empty", function()
+    local a = H.write_file(dir, "gap-a.lua", { "one" })
+    local b = H.write_file(dir, "gap-b.lua", { "two" })
+    follow.pace_ms = 100
+
+    follow.open(a, 1)
+    H.settle(25)
+    assert.equals(a, H.current_file())
+
+    follow.open(b, 1)
+    H.settle(35)
+    assert.equals(a, H.current_file())
+
+    vim.wait(300, function()
+      return H.current_file() == b
+    end)
+    assert.equals(b, H.current_file())
+  end)
+
   it("collapses a repeated jump to the same place", function()
     local a = H.write_file(dir, "a.lua", { "one" })
     follow.pace_ms = 5000
@@ -86,14 +110,13 @@ describe("follow pacing", function()
     assert.equals(1, follow.queue_length())
   end)
 
-  it("caps the queue so you never fall far behind", function()
+  it("keeps every queued jump so no change is skipped", function()
     follow.pace_ms = 5000
     for i = 1, 60 do
       local p = H.write_file(dir, "f" .. i .. ".lua", { "x" })
       follow.open(p, 1)
     end
-    -- MAX_QUEUE is 40. The queue drops the oldest beyond that.
-    assert.is_true(follow.queue_length() <= 40)
+    assert.equals(60, follow.queue_length())
   end)
 
   it("refuses to jump while you type in a file", function()

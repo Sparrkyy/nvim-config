@@ -49,6 +49,7 @@ describe("fixit", function()
 
   before_each(function()
     H.reset_buffers()
+    require("claude.follow").clear_queue()
     H.reload("claude.hud").close_all()
     H.reload("claude.oneshot")
     fixit = H.reload("claude.fixit")

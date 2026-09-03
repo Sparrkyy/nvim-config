@@ -26,12 +26,17 @@ local state = {
   file_by_path = {},
   file_index = nil,
   overview = nil,
+  active_hunk_render_scheduled = false,
+  inline_render_scheduled = {},
 }
 
 local current_location
 local reset_state
 local write_review_buffers
 local open_file
+local render_active_hunk
+local schedule_active_hunk_render
+local schedule_inline_render
 
 local function notify(message, level)
   vim.notify(message, level or vim.log.levels.INFO, { title = "Flow review" })
@@ -433,7 +438,7 @@ local REVIEW_MAPS = {
   { "n", "]f" }, { "n", "[f" },
   { "n", "]r" }, { "n", "[r" }, { "n", "gc" }, { "x", "gc" },
   { "n", "gC" }, { "n", "s" }, { "n", "a" }, { "n", "m" },
-  { "n", "u" }, { "n", "o" }, { "n", "q" }, { "n", "?" },
+  { "n", "u" }, { "n", "<leader>o" }, { "n", "q" }, { "n", "?" },
 }
 
 local function root_prefix(meta)
@@ -551,10 +556,237 @@ local function hunk_header(hunk, index, count)
   local old_last = hunk.old_count > 0 and hunk.old_start + hunk.old_count - 1 or hunk.old_start
   local old_range = hunk.old_count > 1 and string.format("%d–%d", hunk.old_start, old_last) or tostring(hunk.old_start)
   local label = hunk.label and hunk.label ~= "" and " · " .. hunk.label or ""
+  local totals
+  if hunk.binary then
+    totals = "binary"
+  elseif hunk.old_count > 0 and hunk.new_count > 0 then
+    totals = string.format("+%d −%d", hunk.new_count, hunk.old_count)
+  elseif hunk.old_count > 0 then
+    totals = string.format("−%d", hunk.old_count)
+  else
+    totals = string.format("+%d", hunk.new_count)
+  end
   return { {
-    string.format("  ── CHANGE %d/%d · base %s%s ", index, count, old_range, label),
+    string.format("  ── CHANGE %d/%d · %s · base %s%s ", index, count, totals, old_range, label),
     "FlowReviewHunkHeader",
   } }
+end
+
+local function deleted_display_lines(hunk)
+  local lines = vim.deepcopy(hunk.deleted_lines or {})
+  if lines[1] then
+    lines[1] = lines[1]:gsub("^\239\187\191", "")
+  end
+  return lines
+end
+
+local function selected_deletion_hunk(buf, entry)
+  local cursor_line = vim.api.nvim_win_get_cursor(state.win)[1]
+  for _, hunk in ipairs(entry.hunks) do
+    if not hunk.binary and #(hunk.deleted_lines or {}) > 0 and hunk.mark then
+      local mark = vim.api.nvim_buf_get_extmark_by_id(buf, M.diff_ns, hunk.mark, {})
+      if #mark > 0 then
+        local first = mark[1] + 1
+        local last = hunk.new_count > 0 and first + hunk.new_count - 1 or first
+        if cursor_line >= first and cursor_line <= last then
+          return hunk, first
+        end
+      end
+    end
+  end
+  return nil
+end
+
+local function word_tokens(line)
+  local tokens = {}
+  local byte = 1
+  while byte <= #line do
+    local remainder = line:sub(byte)
+    local text = remainder:match("^%s+") or remainder:match("^[%w_]+") or remainder:match("^[^%w_%s]+")
+    if not text or text == "" then
+      text = remainder:sub(1, 1)
+    end
+    table.insert(tokens, { text = text, first = byte - 1, last = byte - 1 + #text })
+    byte = byte + #text
+  end
+  return tokens
+end
+
+local function matching_tokens(old_tokens, new_tokens)
+  local old_matches = {}
+  local new_matches = {}
+  if #old_tokens * #new_tokens > 40000 then
+    local first = 1
+    while first <= #old_tokens and first <= #new_tokens and old_tokens[first].text == new_tokens[first].text do
+      old_matches[first] = true
+      new_matches[first] = true
+      first = first + 1
+    end
+    local old_last = #old_tokens
+    local new_last = #new_tokens
+    while old_last >= first and new_last >= first and old_tokens[old_last].text == new_tokens[new_last].text do
+      old_matches[old_last] = true
+      new_matches[new_last] = true
+      old_last = old_last - 1
+      new_last = new_last - 1
+    end
+    return old_matches, new_matches
+  end
+  local lengths = {}
+  lengths[0] = { [0] = 0 }
+  for new_index = 1, #new_tokens do
+    lengths[0][new_index] = 0
+  end
+  for old_index = 1, #old_tokens do
+    lengths[old_index] = { [0] = 0 }
+    for new_index = 1, #new_tokens do
+      if old_tokens[old_index].text == new_tokens[new_index].text then
+        lengths[old_index][new_index] = lengths[old_index - 1][new_index - 1] + 1
+      else
+        lengths[old_index][new_index] = math.max(lengths[old_index - 1][new_index], lengths[old_index][new_index - 1])
+      end
+    end
+  end
+  local old_index = #old_tokens
+  local new_index = #new_tokens
+  while old_index > 0 and new_index > 0 do
+    if old_tokens[old_index].text == new_tokens[new_index].text then
+      old_matches[old_index] = true
+      new_matches[new_index] = true
+      old_index = old_index - 1
+      new_index = new_index - 1
+    elseif lengths[old_index - 1][new_index] >= lengths[old_index][new_index - 1] then
+      old_index = old_index - 1
+    else
+      new_index = new_index - 1
+    end
+  end
+  return old_matches, new_matches
+end
+
+local function enhanced_line_diff(old_line, new_line)
+  local old_tokens = word_tokens(old_line)
+  local new_tokens = new_line == nil and {} or word_tokens(new_line)
+  local old_matches, new_matches = matching_tokens(old_tokens, new_tokens)
+  local old_chunks = {}
+  for index, token in ipairs(old_tokens) do
+    local group = old_matches[index] and "FlowReviewDelete" or "FlowReviewDeleteText"
+    local previous = old_chunks[#old_chunks]
+    if previous and previous[2] == group then
+      previous[1] = previous[1] .. token.text
+    else
+      table.insert(old_chunks, { token.text, group })
+    end
+  end
+  if #old_chunks == 0 then
+    old_chunks = { { " ", "FlowReviewDeleteText" } }
+  end
+  local new_ranges = {}
+  for index, token in ipairs(new_tokens) do
+    if not new_matches[index] then
+      local previous = new_ranges[#new_ranges]
+      if previous and previous[2] == token.first then
+        previous[2] = token.last
+      else
+        table.insert(new_ranges, { token.first, token.last })
+      end
+    end
+  end
+  return old_chunks, new_ranges
+end
+
+local function enhance_hunk(buf, hunk, line_count)
+  hunk.deleted_virtual_lines = {}
+  if hunk.binary then
+    return
+  end
+  local first = math.max(0, hunk.new_start - 1)
+  local available = math.max(0, math.min(hunk.new_count, line_count - first))
+  local current_lines = available > 0 and vim.api.nvim_buf_get_lines(buf, first, first + available, false) or {}
+  for index, old_line in ipairs(deleted_display_lines(hunk)) do
+    local old_chunks, new_ranges = enhanced_line_diff(old_line, current_lines[index])
+    table.insert(hunk.deleted_virtual_lines, old_chunks)
+    if current_lines[index] ~= nil then
+      local row = first + index - 1
+      for _, range in ipairs(new_ranges) do
+        if range[2] > range[1] then
+          vim.api.nvim_buf_set_extmark(buf, M.diff_ns, row, range[1], {
+            end_row = row,
+            end_col = range[2],
+            hl_group = "FlowReviewAddText",
+            hl_mode = "combine",
+            priority = 100,
+          })
+        end
+      end
+    end
+  end
+end
+
+local function set_hunk_virtual_lines(buf, entry, selected)
+  for index, hunk in ipairs(entry.hunks) do
+    if hunk.mark then
+      local mark = vim.api.nvim_buf_get_extmark_by_id(buf, M.diff_ns, hunk.mark, {})
+      if #mark > 0 then
+        local virtual = { hunk_header(hunk, index, #entry.hunks) }
+        if hunk.binary then
+          table.insert(virtual, { { "  ◆ Binary file changed", "FlowReviewBinary" } })
+        elseif hunk == selected then
+          for _, line in ipairs(hunk.deleted_virtual_lines or {}) do
+            table.insert(virtual, line)
+          end
+        end
+        vim.api.nvim_buf_set_extmark(buf, M.diff_ns, mark[1], mark[2], {
+          id = hunk.mark,
+          virt_lines = virtual,
+          virt_lines_above = hunk.above,
+          priority = 90,
+        })
+      end
+    end
+  end
+end
+
+local function render_deleted_file_notice(buf, entry, current)
+  if entry.status ~= "D" or current ~= "" then
+    return
+  end
+  local name = vim.fn.fnamemodify(entry.file, ":t")
+  vim.api.nvim_buf_set_extmark(buf, M.diff_ns, 0, 0, {
+    virt_text = {
+      { "  󰆴 ", "FlowReviewDeletedFile" },
+      { name, "FlowReviewDeletedFileName" },
+      { " was deleted", "FlowReviewDeletedFile" },
+    },
+    virt_text_pos = "eol",
+    priority = 120,
+  })
+end
+
+render_active_hunk = function()
+  if not state.win or not vim.api.nvim_win_is_valid(state.win) then
+    return
+  end
+  local meta = active_meta()
+  local buf = vim.api.nvim_win_get_buf(state.win)
+  local file = meta and relative_file(meta, buf)
+  local entry = file and state.file_by_path[file] or nil
+  if not entry then
+    return
+  end
+  local selected = not state.overview and selected_deletion_hunk(buf, entry) or nil
+  set_hunk_virtual_lines(buf, entry, selected)
+end
+
+schedule_active_hunk_render = function()
+  if state.active_hunk_render_scheduled then
+    return
+  end
+  state.active_hunk_render_scheduled = true
+  vim.schedule(function()
+    state.active_hunk_render_scheduled = false
+    render_active_hunk()
+  end)
 end
 
 function M.render_inline(buf)
@@ -565,7 +797,8 @@ function M.render_inline(buf)
     return
   end
   vim.api.nvim_buf_clear_namespace(buf, M.diff_ns, 0, -1)
-  entry.hunks = inline_hunks(entry.base_text, buffer_text(buf), entry.binary)
+  local current = buffer_text(buf)
+  entry.hunks = inline_hunks(entry.base_text, current, entry.binary)
   if #entry.hunks == 0 then
     local git_hunks = file_hunks(meta, entry.change)
     if git_hunks and git_hunks[1] and git_hunks[1].binary then
@@ -576,13 +809,10 @@ function M.render_inline(buf)
   local line_count = math.max(1, vim.api.nvim_buf_line_count(buf))
   for index, hunk in ipairs(entry.hunks) do
     local anchor, above = hunk_anchor(hunk, line_count)
+    hunk.above = above
     local virtual = { hunk_header(hunk, index, #entry.hunks) }
     if hunk.binary then
       table.insert(virtual, { { "  ◆ Binary file changed", "FlowReviewBinary" } })
-    else
-      for _, line in ipairs(hunk.deleted_lines or {}) do
-        table.insert(virtual, { { "  − ", "FlowReviewDeleteMarker" }, { line, "FlowReviewDelete" } })
-      end
     end
     hunk.mark = vim.api.nvim_buf_set_extmark(buf, M.diff_ns, anchor, 0, {
       virt_lines = virtual,
@@ -603,7 +833,10 @@ function M.render_inline(buf)
         })
       end
     end
+    enhance_hunk(buf, hunk, line_count)
   end
+  render_deleted_file_notice(buf, entry, current)
+  schedule_active_hunk_render()
 end
 
 local function sync_comment_marks()
@@ -668,9 +901,9 @@ function M.statusline()
   if vim.o.columns < 120 then
     actions = "  ? help "
   elseif state.mode == "diff" then
-    actions = "  K next · J previous · o overview · gc note · s save · ? help "
+    actions = "  K next · J previous · <leader>o overview · gc note · s save · ? help "
   else
-    actions = "  K next · J previous · o overview · gc comment · s submit · m merge · ? help "
+    actions = "  K next · J previous · <leader>o overview · gc comment · s submit · m merge · ? help "
   end
   return table.concat({
     "%#FlowTitle# 󰐅 FLOW REVIEW ",
@@ -713,10 +946,24 @@ local function update_windows()
       end
       local position = entry and string.format(" %02d/%02d · %s ", entry.index, #state.files, entry.kind) or " CONTEXT "
       local totals = entry and string.format(" +%d −%d · %d changes ", entry.added, entry.deleted, #entry.hunks) or ""
-      set_winbar(win, "%#FlowTitle#" .. position .. "%#FlowHint# " .. escape_statusline(file) .. escape_statusline(totals) .. "%=" .. status .. "%#FlowHint# · o overview ")
+      set_winbar(win, "%#FlowTitle#" .. position .. "%#FlowHint# " .. escape_statusline(file) .. escape_statusline(totals) .. "%=" .. status .. "%#FlowHint# · <leader>o overview ")
     end
   end
   vim.cmd("redrawstatus")
+end
+
+schedule_inline_render = function(buf)
+  if state.inline_render_scheduled[buf] then
+    return
+  end
+  state.inline_render_scheduled[buf] = true
+  vim.schedule(function()
+    state.inline_render_scheduled[buf] = nil
+    if state.tab and vim.api.nvim_buf_is_valid(buf) then
+      M.render_inline(buf)
+      update_windows()
+    end
+  end)
 end
 
 local function mark_dirty(buf)
@@ -763,7 +1010,7 @@ local function review_maps(buf, plan_id)
     M.comment(plan_id, nil, { buf = buf, start_line = first, end_line = last })
   end, "Flow: add review comment")
   map(buf, "n", "gC", function() M.remove_comment(plan_id) end, "Flow: remove review comment")
-  map(buf, "n", "o", M.overview, "Flow: toggle review overview")
+  map(buf, "n", "<leader>o", M.overview, "Flow: toggle review overview")
   if state.mode == "diff" then
     map(buf, "n", "s", function() M.submit() end, "Flow: save review edits and notes")
   else
@@ -825,6 +1072,7 @@ local function setup_autocmds()
     callback = function(ev)
       if state.tab then
         mark_dirty(ev.buf)
+        schedule_inline_render(ev.buf)
       end
     end,
   })
@@ -849,6 +1097,14 @@ local function setup_autocmds()
         if meta then
           current_location(meta)
         end
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "WinScrolled", "WinResized", "VimResized" }, {
+    group = group,
+    callback = function()
+      if state.tab and vim.api.nvim_get_current_tabpage() == state.tab then
+        schedule_active_hunk_render()
       end
     end,
   })
@@ -905,6 +1161,8 @@ reset_state = function()
     file_by_path = {},
     file_index = nil,
     overview = nil,
+    active_hunk_render_scheduled = false,
+    inline_render_scheduled = {},
   }
 end
 
@@ -953,6 +1211,7 @@ local function close_overview()
   if win and vim.api.nvim_win_is_valid(win) then
     pcall(vim.api.nvim_win_close, win, true)
   end
+  schedule_active_hunk_render()
 end
 
 function M.overview()
@@ -963,6 +1222,7 @@ function M.overview()
     close_overview()
     return true
   end
+  schedule_active_hunk_render()
   local meta = active_meta()
   local lines = {
     tostring(meta.title or "Code review"),
@@ -987,7 +1247,7 @@ function M.overview()
       table.insert(lines, "")
     end
   end
-  table.insert(lines, "<CR> open file   K/J move through changes   o/q close overview")
+  table.insert(lines, "<CR> open file   K/J move through changes   <leader>o/q close overview")
   local longest = 0
   for _, line in ipairs(lines) do
     longest = math.max(longest, vim.fn.strdisplaywidth(line))
@@ -1036,7 +1296,7 @@ function M.overview()
   end
   map(buf, "n", "q", dismiss, "Flow: close review overview")
   map(buf, "n", "<Esc>", dismiss, "Flow: close review overview")
-  map(buf, "n", "o", dismiss, "Flow: close review overview")
+  map(buf, "n", "<leader>o", dismiss, "Flow: close review overview")
   map(buf, "n", "<CR>", function()
     local target = file_rows[vim.api.nvim_win_get_cursor(0)[1]]
     if target then
@@ -1613,7 +1873,7 @@ function M.help()
     "K / J      next / previous hunk",
     "]c / [c   next / previous hunk (alternate)",
     "]f / [f   next / previous file",
-    "o          toggle the ordered file overview",
+    "<leader>o  toggle the ordered file overview",
     "gc         add an anchored note on the line or selection",
     "]r / [r   next / previous note",
     "gC         remove the note under the cursor",

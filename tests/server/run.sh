@@ -186,6 +186,26 @@ if printf '%s' "$page" | grep -q 'id="play"'; then
 else
   no "the page has a narration control"
 fi
+if printf '%s' "$page" | grep -q 'id="animate"'; then
+  ok "the page can replay plan motion"
+else
+  no "the page can replay plan motion"
+fi
+if printf '%s' "$page" | grep -q 'prepareCodeMotion'; then
+  ok "the page animates code changes"
+else
+  no "the page animates code changes"
+fi
+if printf '%s' "$page" | grep -q 'animateDiagram'; then
+  ok "the page animates diagram flow"
+else
+  no "the page animates diagram flow"
+fi
+if printf '%s' "$page" | grep -q 'prefers-reduced-motion'; then
+  ok "the page respects reduced motion"
+else
+  no "the page respects reduced motion"
+fi
 if printf '%s' "$page" | grep -q 'id="rate"'; then
   ok "the page has a narration speed control"
 else

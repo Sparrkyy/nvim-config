@@ -8,14 +8,14 @@
 :root {
   --bg: #fbfaf8; --panel: #ffffff; --ink: #1c1b19; --muted: #6b6862;
   --line: #e3e0da; --accent: #7c5cff; --accent-soft: #efeaff;
-  --ok: #2f7d4f; --warn: #a8650c; --code-bg: #f3f1ec;
+  --ok: #2f7d4f; --warn: #a8650c; --remove: #a43a46; --code-bg: #f3f1ec;
   --doc: 46rem; --gutter: 20rem;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #16151a; --panel: #1d1c22; --ink: #e6e3dd; --muted: #97938c;
     --line: #302e38; --accent: #a892ff; --accent-soft: #2a2440;
-    --ok: #6cc08a; --warn: #d9a441; --code-bg: #24222b;
+    --ok: #6cc08a; --warn: #d9a441; --remove: #ef7a86; --code-bg: #24222b;
   }
 }
 * { box-sizing: border-box; }
@@ -78,13 +78,52 @@ main { display: grid; grid-template-columns: 1fr var(--gutter); gap: 2rem;
 #doc pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: .5rem;
   padding: .9rem 1rem; overflow-x: auto; }
 #doc pre code { background: none; padding: 0; font-size: .82rem; line-height: 1.55; }
+#doc pre code .code-line { display: block; min-height: 1.55em; margin: 0 -.45rem; padding: 0 .45rem; }
+#doc pre code .code-add { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+#doc pre code .code-remove { color: var(--remove); background: color-mix(in srgb, var(--remove) 12%, transparent); }
+#doc pre code .code-hunk { color: var(--accent); }
 #doc table { border-collapse: collapse; width: 100%; font-size: .92rem; display: block; overflow-x: auto; }
 #doc th, #doc td { border: 1px solid var(--line); padding: .4rem .6rem; text-align: left; }
 #doc th { background: var(--code-bg); font-weight: 600; }
 #doc pre.mermaid { background: var(--panel); text-align: center; }
 #doc pre.mermaid.error { text-align: left; border-color: var(--warn); color: var(--warn); }
+#doc .plan-block-motion { animation: plan-block-in .38s cubic-bezier(.2,.8,.2,1) both; }
+#doc pre.code-motion .code-line { animation: code-line-in .3s ease-out both;
+  animation-delay: calc(var(--motion-index, 0) * 42ms); }
+#doc pre.diagram-motion svg .node, #doc pre.diagram-motion svg .cluster,
+#doc pre.diagram-motion svg .edgeLabel, #doc pre.diagram-motion svg .messageText,
+#doc pre.diagram-motion svg .labelText { transform-box: fill-box; transform-origin: center;
+  animation: diagram-node-in .42s cubic-bezier(.2,.8,.2,1) both;
+  animation-delay: calc(var(--motion-index, 0) * 90ms); }
+#doc pre.diagram-motion svg .edgePath path, #doc pre.diagram-motion svg .flowchart-link,
+#doc pre.diagram-motion svg .messageLine0, #doc pre.diagram-motion svg .messageLine1,
+#doc pre.diagram-motion svg .loopLine { stroke-dasharray: var(--path-length, 600);
+  stroke-dashoffset: var(--path-length, 600); animation: diagram-path-in .75s ease-out forwards;
+  animation-delay: calc(var(--motion-index, 0) * 90ms); }
 #doc .commented { background: var(--accent-soft); border-radius: .3rem;
   box-shadow: -.6rem 0 0 0 var(--accent-soft), .6rem 0 0 0 var(--accent-soft); }
+
+@keyframes plan-block-in {
+  from { opacity: 0; transform: translateY(.6rem); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes code-line-in {
+  from { opacity: 0; transform: translateX(-.65rem); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes diagram-node-in {
+  from { opacity: 0; transform: scale(.82); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes diagram-path-in { to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  #doc .plan-block-motion, #doc pre.code-motion .code-line,
+  #doc pre.diagram-motion svg * { animation: none !important; transform: none !important; }
+  #doc pre.diagram-motion svg .edgePath path, #doc pre.diagram-motion svg .flowchart-link,
+  #doc pre.diagram-motion svg .messageLine0, #doc pre.diagram-motion svg .messageLine1,
+  #doc pre.diagram-motion svg .loopLine { stroke-dasharray: none !important; stroke-dashoffset: 0 !important; }
+}
 
 aside { position: relative; font-family: ui-sans-serif, system-ui, sans-serif; }
 .card { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent);
@@ -140,6 +179,7 @@ aside { position: relative; font-family: ui-sans-serif, system-ui, sans-serif; }
       </select>
     </label>
     <button class="ghost" id="viewmode">Show all</button>
+    <button class="ghost" id="animate">Replay motion</button>
   </div>
   <select id="revsel" title="Revision"></select>
   <button class="ghost" id="refresh">Refresh</button>
@@ -209,6 +249,8 @@ const narration = {
   rate: savedRate(),
   voiceURI: savedVoice(),
 };
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+const motion = { key: "" };
 
 const preferredVoices = [
   "Daniel",
@@ -357,6 +399,71 @@ function chunkSpeech(chunk) {
   return text || chunk.title;
 }
 
+function prepareCodeMotion(root) {
+  root.querySelectorAll("pre:not(.mermaid) > code").forEach((code) => {
+    const isDiff = code.classList.contains("language-diff");
+    const lines = code.textContent.replace(/\n$/, "").split("\n");
+    code.textContent = "";
+    lines.forEach((line, index) => {
+      const span = document.createElement("span");
+      span.className = "code-line";
+      if (isDiff && /^\+(?!\+\+)/.test(line)) span.classList.add("code-add");
+      if (isDiff && /^-(?!--)/.test(line)) span.classList.add("code-remove");
+      if (isDiff && /^@@/.test(line)) span.classList.add("code-hunk");
+      span.style.setProperty("--motion-index", String(Math.min(index, 36)));
+      span.textContent = line || " ";
+      code.appendChild(span);
+    });
+  });
+}
+
+function motionVisible(el) {
+  if (!narration.guided) return true;
+  const block = el.closest("#doc > [data-chunk]");
+  return block && Number(block.dataset.chunk) === narration.index;
+}
+
+function restartMotion(el, className) {
+  el.classList.remove(className);
+  void el.offsetWidth;
+  el.classList.add(className);
+}
+
+function animateDiagram(pre) {
+  const svg = pre.querySelector("svg");
+  if (!svg) return;
+  const staged = svg.querySelectorAll(".node, .cluster, .edgeLabel, .messageText, .labelText");
+  staged.forEach((el, index) => el.style.setProperty("--motion-index", String(Math.min(index, 30))));
+  const paths = svg.querySelectorAll(".edgePath path, .flowchart-link, .messageLine0, .messageLine1, .loopLine");
+  paths.forEach((path, index) => {
+    const length = path.getTotalLength ? Math.max(1, Math.ceil(path.getTotalLength())) : 600;
+    path.style.setProperty("--path-length", String(length));
+    path.style.setProperty("--motion-index", String(Math.min(index + 1, 30)));
+  });
+  restartMotion(pre, "diagram-motion");
+}
+
+function animatePlan(force) {
+  const key = [viewing, narration.guided, narration.index].join(":");
+  if (reducedMotion.matches || (!force && motion.key === key)) return;
+  motion.key = key;
+  requestAnimationFrame(() => {
+    const blocks = Array.from($("doc").children).filter((el) => motionVisible(el));
+    blocks.forEach((block, index) => {
+      block.style.setProperty("--motion-index", String(Math.min(index, 12)));
+      restartMotion(block, "plan-block-motion");
+      const codeBlocks = block.matches("pre:not(.mermaid)")
+        ? [block]
+        : Array.from(block.querySelectorAll("pre:not(.mermaid)"));
+      codeBlocks.forEach((pre) => restartMotion(pre, "code-motion"));
+      const diagrams = block.matches("pre.mermaid")
+        ? [block]
+        : Array.from(block.querySelectorAll("pre.mermaid"));
+      diagrams.forEach(animateDiagram);
+    });
+  });
+}
+
 function stopNarration() {
   narration.generation += 1;
   narration.playing = false;
@@ -389,6 +496,11 @@ function syncPresentation() {
   $("voice").disabled = !canSpeak || narrationVoices().length === 0;
   $("rate").disabled = !canSpeak;
   $("viewmode").textContent = narration.guided ? "Show all" : "Present";
+  $("animate").disabled = reducedMotion.matches || count === 0;
+  $("animate").title = reducedMotion.matches
+    ? "Motion is disabled by your system preference"
+    : "Replay code and diagram motion";
+  animatePlan(false);
   renderGutter();
 }
 
@@ -548,6 +660,7 @@ async function verifyDiagramRendering(nodes, generation) {
       if (rendered.bindFunctions) rendered.bindFunctions(active);
       if (!active.querySelector("svg")) throw new Error("Mermaid did not produce SVG.");
       active.dataset.rendered = "true";
+      if (!reducedMotion.matches && motionVisible(active)) requestAnimationFrame(() => animateDiagram(active));
       active = null;
     }
     if (generation !== diagramCheck.generation) return;
@@ -576,6 +689,7 @@ function renderDoc(markdown, view) {
     pre.textContent = code.textContent;
     code.parentElement.replaceWith(pre);
   });
+  prepareCodeMotion(doc);
 
   const diagrams = Array.from(doc.querySelectorAll("pre.mermaid"));
   const generation = diagramCheck.generation + 1;
@@ -589,6 +703,7 @@ function renderDoc(markdown, view) {
   syncDiagramGate();
 
   anchorBlocks(doc);
+  motion.key = "";
   preparePresentation(doc, view);
 
   if (diagrams.length) verifyDiagramRendering(diagrams, generation).then(renderGutter);
@@ -795,6 +910,7 @@ $("rate").value = String(narration.rate);
 $("play").onclick = toggleNarration;
 $("previous").onclick = () => moveChunk(-1);
 $("next").onclick = () => moveChunk(1);
+$("animate").onclick = () => animatePlan(true);
 $("viewmode").onclick = () => {
   stopNarration();
   narration.guided = !narration.guided;

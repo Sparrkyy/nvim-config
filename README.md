@@ -81,7 +81,8 @@ finishes or needs you. There is no status line, so the job window in the top
 right is where you watch the work.
 
 Follow mode never takes focus. It stays quiet while you are in insert mode and
-while a diff is under review.
+while a diff is under review. Change hunks replay one at a time with a one-second
+gap, and the same gap applies when the next hunk is in another file.
 
 The Lua side is `lua/claude/follow.lua`. The hook script is
 `claude/nvim-follow.sh` in this repository, which `install.sh` links into
@@ -244,11 +245,13 @@ The review workspace also works independently of a Flow plan. Run
 `:FlowReview` or press `<leader>dR` anywhere inside a Git repository to review
 the current branch and local worktree against their merge base with `master`.
 Repositories without `master` fall back to `main`.
-The review opens as one real editable Neovim buffer. Removed base lines appear
-inline as virtual `−` lines. Added and replaced current lines remain normal
-buffer lines with diff highlights. Committed branch changes and current local
-edits share the same review experience. Pass another base when needed, for
-example `:FlowReview main`. Use `:FlowPlanReview` to reopen the verified
+The review opens as one real editable Neovim buffer. Added and replaced current
+lines remain normal buffer lines with diff highlights. When your cursor is on a
+change, its complete removed base chunk appears directly above the current code;
+other deletions stay out of the way. Replaced words receive stronger red and
+green emphasis inside the softer line diff. Committed branch changes and current
+local edits share the same review experience. Pass another base when needed,
+for example `:FlowReview main`. Use `:FlowPlanReview` to reopen the verified
 implementation review for the current Flow plan.
 
 1. A background Claude session runs in plan mode and writes a design document.
@@ -257,12 +260,15 @@ implementation review for the current Flow plan.
    targeted tests cannot prove the change.
 2. The document opens in your browser one chunk at a time. Press **Listen** to
    hear each chunk and advance through the plan automatically. Choose a voice
-   and speed; Flow remembers both. Select text and leave a comment. **Replan**
-   sends the open comments back to Claude. Flow renders every Mermaid diagram
-   with Mermaid 11 and confirms that each one produces SVG. A failed diagram
-   blocks approval. **Repair diagrams** records the renderer error and sends
-   the plan back to Claude. **Approve and implement** accepts only the current
-   revision after this rendering check passes.
+   and speed; Flow remembers both. Code changes reveal line by line, and
+   Mermaid nodes and edges animate in flow order. **Replay motion** runs the
+   current chunk again. System reduced-motion preferences disable animation.
+   Select text and leave a comment. **Replan** sends the open comments back to
+   Claude. Flow renders every Mermaid diagram with Mermaid 11 and confirms that
+   each one produces SVG. A failed diagram blocks approval. **Repair diagrams**
+   records the renderer error and sends the plan back to Claude. **Approve and
+   implement** accepts only the current revision after this rendering check
+   passes.
 3. Flow refuses to start when the source worktree has a tracked, staged,
    untracked, or deleted change. From a clean source, it creates a `flow/...`
    branch and worktree, then opens a persistent Claude Code session there.
@@ -276,7 +282,7 @@ implementation review for the current Flow plan.
    worktree buffer, with its normal LSP, completion, diagnostics, formatting,
    and code actions. Removed base lines are virtual and cannot interfere with
    editing. Flow ignores whitespace-only changes. It orders core files first,
-   then tests, then supporting files. Press `o` for the compact review overview.
+   then tests, then supporting files. Press `<leader>o` for the compact review overview.
    Edit and save like any other buffer. Select lines and press `gc` to leave an
    anchored comment. Press `s` to send all direct edits and open comments to the
    same Claude session. Claude commits them and verifies the result before
@@ -296,7 +302,7 @@ implementation review for the current Flow plan.
 | `<leader>dk`, `[c` | Review the previous hunk |
 | `K`, `J` | Next or previous hunk inside the review only |
 | `]f`, `[f` | Review the next or previous changed file |
-| `o` | Toggle the ordered review overview |
+| `<leader>o` | Toggle the ordered review overview |
 | `<leader>dr` | Send review feedback to Claude |
 | `<leader>dc` | Comment on the current review line |
 | `<leader>dS` | Submit review edits and comments |
@@ -320,7 +326,7 @@ on comments.
 The review has no file-tree split. It starts with one editable code window. For
 multi-file changes, a centered overview opens first and groups files as core,
 tests, and supporting changes. Within each group, larger changes appear first.
-Press `<CR>` to open a file or `o` to show or hide the overview at any time.
+Press `<CR>` to open a file or `<leader>o` to show or hide the overview at any time.
 
 In an independent branch review, the navigation, editing, and anchored-comment
 keys are the same. `s` saves edited buffers and durable local notes; Flow-only
