@@ -1,4 +1,4 @@
--- Claude Code, in a Neovim terminal split.
+-- Claude Code, in the Telescope agent manager.
 -- The plugin speaks the same websocket protocol as the official IDE extensions.
 -- It gives Claude your open file, your visual selection, and your diagnostics,
 -- and it opens Claude's edits as native Neovim diffs that you accept or reject.
@@ -20,24 +20,20 @@ return {
       track_selection = true,
       focus_after_send = false,
       terminal = {
-        split_side = "right",
-        split_width_percentage = 0.35,
-        provider = "snacks",
-        auto_close = false,
-        auto_insert = true,
+        provider = "none",
       },
       diff_opts = {
         layout = "vertical",
         open_in_new_tab = false,
-        auto_resize_terminal = true,
+        auto_resize_terminal = false,
       },
     },
     keys = {
       { "<leader>a", nil, desc = "AI / Claude Code" },
-      { "<leader>ac", "<cmd>ClaudeCode<cr>", desc = "Toggle Claude" },
-      { "<leader>af", "<cmd>ClaudeCodeFocus<cr>", desc = "Focus Claude" },
-      { "<leader>ar", "<cmd>ClaudeCode --resume<cr>", desc = "Resume a session" },
-      { "<leader>aC", "<cmd>ClaudeCode --continue<cr>", desc = "Continue last session" },
+      { "<leader>ac", function() require("claude.sessions").show_manager() end, desc = "Open Claude manager" },
+      { "<leader>af", function() require("claude.sessions").show_manager() end, desc = "Focus Claude manager" },
+      { "<leader>ar", function() require("claude.sessions").resume_session() end, desc = "Resume in Claude manager" },
+      { "<leader>aC", function() require("claude.sessions").continue_session() end, desc = "Continue in Claude manager" },
       { "<leader>am", "<cmd>ClaudeCodeSelectModel<cr>", desc = "Select model" },
       { "<leader>ab", "<cmd>ClaudeCodeAdd %<cr>", desc = "Add current buffer" },
       { "<leader>as", function() require("claude.follow").send_selection() end, mode = "v", desc = "Send selection" },
@@ -54,11 +50,26 @@ return {
       { "<leader>a?", "<cmd>ClaudeCodeStatus<cr>", desc = "Connection status" },
 
       -- Working alongside the agent.
-      { "<leader>ai", function() require("claude.follow").prompt() end, desc = "Prompt Claude" },
-      { "<leader>aI", function() require("claude.follow").prompt({ context = true }) end, desc = "Prompt with file context" },
-      { "<leader>ai", function() require("claude.follow").prompt({ selection = true }) end, mode = "v", desc = "Prompt about selection" },
-      { "<leader>ak", function() require("claude.follow").interrupt() end, desc = "Interrupt Claude" },
-      { "<leader>ap", "<cmd>ClaudeCode --permission-mode plan<cr>", desc = "Start in plan mode" },
+      { "<leader>ai", function() require("claude.sessions").new_terminal_session() end, desc = "New persistent Claude session" },
+      {
+        "<leader>aI",
+        function()
+          local sessions = require("claude.sessions")
+          sessions.new_terminal_session({ default_text = sessions.context_reference() })
+        end,
+        desc = "New persistent Claude session with context",
+      },
+      {
+        "<leader>ai",
+        function()
+          local sessions = require("claude.sessions")
+          sessions.new_terminal_session({ default_text = sessions.selection_reference() })
+        end,
+        mode = "v",
+        desc = "New persistent Claude session with selection",
+      },
+      { "<leader>ak", function() require("claude.sessions").interrupt() end, desc = "Interrupt managed Claude" },
+      { "<leader>ap", function() require("claude.sessions").plan_session() end, desc = "Start pinned Claude plan session" },
       { "<leader>aF", function() require("claude.follow").toggle() end, desc = "Toggle follow mode" },
       { "<leader>aj", function() require("claude.follow").next() end, desc = "Next queued jump" },
       { "<leader>aJ", function() require("claude.follow").clear_queue() end, desc = "Drop queued jumps" },
@@ -68,6 +79,7 @@ return {
       { "<leader>ao", function() require("claude.ask").ask() end, desc = "One-off request" },
       { "<leader>ao", function() require("claude.ask").ask_selection() end, mode = "v", desc = "One-off request on the selection" },
       { "<leader>aO", function() require("claude.hud").close() end, desc = "Close the progress window" },
+      { "<leader>al", function() require("claude.sessions").toggle() end, desc = "Manage Claude agents" },
       { "<leader>ah", function() require("claude.follow").toggle_marks() end, desc = "Toggle change highlights" },
       { "<leader>aH", function() require("claude.follow").clear_marks() end, desc = "Clear change highlights" },
 

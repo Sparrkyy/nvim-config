@@ -139,9 +139,7 @@ function M.set_meta(plan_id, patch, cwd)
   return meta
 end
 
---- Every plan for `cwd`, newest first.
-function M.plans(cwd)
-  local dir = M.project_dir(cwd)
+local function plans_in(dir)
   if vim.fn.isdirectory(dir) ~= 1 then
     return {}
   end
@@ -154,10 +152,33 @@ function M.plans(cwd)
       end
     end
   end
-  table.sort(out, function(a, b)
+  return out
+end
+
+local function newest_first(plans)
+  table.sort(plans, function(a, b)
     return (a.created or 0) > (b.created or 0)
   end)
-  return out
+  return plans
+end
+
+--- Every plan for `cwd`, newest first.
+function M.plans(cwd)
+  return newest_first(plans_in(M.project_dir(cwd)))
+end
+
+--- Every plan across all working directories, newest first.
+function M.all_plans()
+  if vim.fn.isdirectory(M.root) ~= 1 then
+    return {}
+  end
+  local out = {}
+  for name, kind in vim.fs.dir(M.root) do
+    if kind == "directory" then
+      vim.list_extend(out, plans_in(M.root .. "/" .. name))
+    end
+  end
+  return newest_first(out)
 end
 
 --- Revisions -----------------------------------------------------------------

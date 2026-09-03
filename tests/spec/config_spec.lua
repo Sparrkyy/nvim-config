@@ -144,6 +144,11 @@ describe("claude keymaps", function()
     assert.is_truthy(claude)
   end)
 
+  it("never lets claudecode.nvim open a terminal window", function()
+    assert.equals("none", claude.opts.terminal.provider)
+    assert.is_false(claude.opts.diff_opts.auto_resize_terminal)
+  end)
+
   local function has_desc(text)
     for _, k in ipairs(claude.keys) do
       if k.desc == text then
@@ -168,6 +173,7 @@ describe("claude keymaps", function()
     assert.is_true(has_desc("One-off request"))
     assert.is_true(has_desc("One-off request on the selection"))
     assert.is_true(has_desc("Close the progress window"))
+    assert.is_true(has_desc("Manage Claude agents"))
   end)
 
   it("binds the change-highlight controls", function()
@@ -176,7 +182,12 @@ describe("claude keymaps", function()
   end)
 
   it("binds prompting and diff review", function()
-    assert.is_true(has_desc("Prompt Claude"))
+    assert.is_true(has_desc("New persistent Claude session"))
+    assert.is_true(has_desc("New persistent Claude session with context"))
+    assert.is_true(has_desc("Open Claude manager"))
+    assert.is_true(has_desc("Resume in Claude manager"))
+    assert.is_true(has_desc("Continue in Claude manager"))
+    assert.is_true(has_desc("Start pinned Claude plan session"))
     assert.is_true(has_desc("Accept diff"))
     assert.is_true(has_desc("Reject diff"))
   end)

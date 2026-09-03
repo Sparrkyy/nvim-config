@@ -14,7 +14,7 @@ local pending_changes = {}
 local mark_epoch = 0
 local enqueue_replay
 
-M.enabled = true
+M.enabled = false
 M.highlight_changes = true
 M.permission_enabled = true
 M.status = "idle" -- idle | working
@@ -489,6 +489,17 @@ local function replay_added_chunks(bufnr, path, chunks)
   return queued
 end
 
+local function highlight_added_chunks(bufnr, path, chunks)
+  local records = {}
+  for _, chunk in ipairs(chunks) do
+    local start, count = chunk_range(path, chunk)
+    if start then
+      add_line_records(bufnr, start, count, vim.api.nvim_buf_line_count(bufnr), records)
+    end
+  end
+  animate_records(records)
+end
+
 --- Highlight the lines Claude just wrote in a file.
 ---@param path string
 ---@param chunks table list of written strings
@@ -509,7 +520,11 @@ function M.mark(path, chunks)
     if not vim.api.nvim_buf_is_valid(bufnr) then
       return
     end
-    replay_added_chunks(bufnr, full, chunks)
+    if M.enabled then
+      replay_added_chunks(bufnr, full, chunks)
+    else
+      highlight_added_chunks(bufnr, full, chunks)
+    end
     vim.cmd("redraw")
   end)
 end
@@ -760,6 +775,9 @@ function M.handle(encoded)
     local kind = data.kind
 
     if kind == "open" then
+      if not M.enabled then
+        return "disabled"
+      end
       M.status = "working"
       M.last_tool = data.tool
       -- vim.json turns JSON null into vim.NIL, which is truthy in Lua.
@@ -847,43 +865,6 @@ local function claude_terminal()
   return terminal, bufnr
 end
 
---- Claude's TUI needs a moment to boot. If we start it and write at once, the
---- bytes reach the PTY before Claude reads stdin: the text lands in the box but
---- the submit carriage return is lost. So wait until Claude draws its prompt.
-local function terminal_is_ready(bufnr)
-  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
-    return false
-  end
-  for _, line in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)) do
-    -- The top border of Claude's input box, or the caret drawn inside it.
-    if line:find("\226\149\173", 1, true) or line:find("\226\148\130 >", 1, true) then
-      return true
-    end
-  end
-  return false
-end
-
---- Call cb once Claude's prompt is up. Give up after about 10 seconds and call
---- cb anyway, so a slow start never swallows your prompt without a trace.
-local function when_ready(cb)
-  local attempts = 0
-  local function poll()
-    local _, bufnr = claude_terminal()
-    if terminal_is_ready(bufnr) then
-      -- One more beat so the first full paint finishes.
-      vim.defer_fn(cb, 150)
-      return
-    end
-    attempts = attempts + 1
-    if attempts > 100 then
-      cb()
-      return
-    end
-    vim.defer_fn(poll, 100)
-  end
-  poll()
-end
-
 --- Interrupt Claude mid-task, the same as pressing Esc in its pane.
 function M.interrupt()
   local _, bufnr = claude_terminal()
@@ -948,51 +929,6 @@ function M.send_selection()
   return true
 end
 
---- Send a prompt to Claude from anywhere, without leaving the buffer.
----@param opts table|nil { context = boolean, selection = boolean }
-function M.prompt(opts)
-  opts = opts or {}
-  local terminal = claude_terminal()
-  if not terminal then
-    vim.notify("claudecode.nvim is not loaded.", vim.log.levels.ERROR)
-    return
-  end
-
-  -- Capture the selection first. Reading the range must happen before the input
-  -- box opens, because opening it ends visual mode.
-  if opts.selection then
-    M.send_selection()
-  end
-
-  local prefix = ""
-  if opts.context and not opts.selection then
-    local file = vim.fn.expand("%:.")
-    if file ~= "" and vim.bo.buftype == "" then
-      prefix = string.format("@%s (line %d) ", file, vim.api.nvim_win_get_cursor(0)[1])
-    end
-  end
-
-  vim.ui.input({ prompt = "Claude ", default = prefix }, function(input)
-    if not input or vim.trim(input) == "" then
-      return
-    end
-
-    local _, running = claude_terminal()
-    terminal.ensure_visible()
-
-    local function send()
-      terminal.send_to_terminal(input, { submit = true })
-      M.status = "working"
-    end
-
-    if running then
-      vim.schedule(send)
-    else
-      when_ready(send)
-    end
-  end)
-end
-
 --- Resolve a diff from anywhere. The plugin's own commands read the diff
 --- context out of the current buffer, so they fail when the cursor sits in the
 --- original file or in Claude's terminal. These wrappers find the proposed
@@ -1028,6 +964,7 @@ function M.toggle()
   if not M.enabled then
     M.clear_queue()
     M.clear_marks()
+    pending_changes = {}
   end
   vim.notify("Follow mode " .. (M.enabled and "on" or "off"), vim.log.levels.INFO, { title = "Claude Code" })
 end

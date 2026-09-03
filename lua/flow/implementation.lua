@@ -2,11 +2,11 @@ local M = {}
 
 local store = require("flow.store")
 local worktree = require("flow.worktree")
+local session_registry = require("claude.sessions")
 
 M.opts = {
   command = "claude",
   permission_mode = "auto",
-  terminal_width = 0.38,
 }
 
 M.sessions = {}
@@ -131,19 +131,38 @@ function M.send_terminal(session, text)
   if not session or not session.channel or session.channel <= 0 then
     return false
   end
-  local pasted = "\27[200~" .. text .. "\27[201~\r"
-  return pcall(vim.fn.chansend, session.channel, pasted)
+  return session_registry.send_channel(session.channel, text)
 end
 
 local function running_session(plan_id)
   local session = M.sessions[plan_id]
   if session and session.buf and vim.api.nvim_buf_is_valid(session.buf) then
+    if not session.registry_id then
+      local meta = store.meta(plan_id)
+      session.registry_id = session_registry.register_terminal({
+        title = "Flow: " .. tostring(meta and meta.title or "implementation"),
+        kind = "Flow implementation",
+        cwd = meta and meta.worktree or vim.fn.getcwd(),
+        session_id = meta and meta.session_id,
+        buf = session.buf,
+        channel = session.channel,
+      })
+    end
     return session
   end
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_valid(buf) and vim.b[buf].flow_plan_id == plan_id then
       local channel = vim.b[buf].terminal_job_id or vim.bo[buf].channel
       session = { buf = buf, channel = channel }
+      local meta = store.meta(plan_id)
+      session.registry_id = session_registry.register_terminal({
+        title = "Flow: " .. tostring(meta and meta.title or "implementation"),
+        kind = "Flow implementation",
+        cwd = meta and meta.worktree or vim.fn.getcwd(),
+        session_id = meta and meta.session_id,
+        buf = buf,
+        channel = channel,
+      })
       M.sessions[plan_id] = session
       return session
     end
@@ -167,6 +186,9 @@ local function start_terminal(plan_id, prompt, resume)
       local current = M.sessions[plan_id]
       if current then
         current.exited = code
+        if current.registry_id then
+          session_registry.finish(current.registry_id, code == 0)
+        end
       end
     end,
   })
@@ -174,39 +196,25 @@ local function start_terminal(plan_id, prompt, resume)
     return nil, err
   end
   M.sessions[plan_id] = session
+  session.registry_id = session_registry.register_terminal({
+    title = "Flow: " .. tostring(meta.title or "implementation"),
+    kind = "Flow implementation",
+    prompt = prompt,
+    cwd = meta.worktree,
+    session_id = meta.session_id,
+    buf = session.buf,
+    channel = session.channel,
+    resume_args = { "--permission-mode", M.opts.permission_mode },
+  })
   store.set_meta(plan_id, { session_started = true }, meta.cwd)
   return session, nil
 end
 
-local function terminal_window(session)
-  if not session or not session.buf then
-    return -1
-  end
-  return vim.fn.bufwinid(session.buf)
-end
-
-local function show_terminal(session, focus)
-  local win = terminal_window(session)
-  if win ~= -1 then
-    if focus then
-      vim.api.nvim_set_current_win(win)
-      vim.cmd("startinsert")
-    end
-    return
-  end
-  local previous = vim.api.nvim_get_current_win()
-  vim.cmd("botright vsplit")
-  vim.api.nvim_win_set_buf(0, session.buf)
-  vim.api.nvim_win_set_width(0, math.max(44, math.floor(vim.o.columns * M.opts.terminal_width)))
-  if focus then
-    vim.cmd("startinsert")
-  elseif vim.api.nvim_win_is_valid(previous) then
-    vim.api.nvim_set_current_win(previous)
-  end
+local function show_session(session)
+  return session_registry.show_manager({ selected_id = session.registry_id })
 end
 
 function M.open(plan_id, opts)
-  opts = opts or {}
   plan_id = plan_id or require("flow").current()
   local meta = plan_id and store.meta(plan_id)
   if not meta or not present(meta.worktree) then
@@ -232,18 +240,14 @@ function M.open(plan_id, opts)
     end
     session = started
   end
-  show_terminal(session, opts.focus ~= false)
-  return true
+  return show_session(session)
 end
 
 function M.toggle(plan_id)
-  plan_id = plan_id or require("flow").current()
-  local session = plan_id and running_session(plan_id)
-  local win = terminal_window(session)
-  if win ~= -1 then
-    pcall(vim.api.nvim_win_close, win, false)
-    return false
+  if session_registry.is_open() then
+    return session_registry.toggle()
   end
+  plan_id = plan_id or require("flow").current()
   return M.open(plan_id, { focus = true })
 end
 
@@ -297,7 +301,7 @@ function M.begin(plan_id)
     notify(start_err, vim.log.levels.ERROR)
     return false
   end
-  show_terminal(session, false)
+  show_session(session)
   notify("Claude is implementing the approved plan in " .. meta.worktree)
   fire("FlowImplementationStarted", plan_id)
   return true
@@ -372,7 +376,7 @@ function M.submit_review(plan_id, opts)
     end
     session = started
   end
-  show_terminal(session, false)
+  show_session(session)
   notify("Claude is applying review feedback. Review resumes after verification.")
   return true
 end
@@ -426,7 +430,7 @@ function M.sync(plan_id, source_head)
     end
     session = started
   end
-  show_terminal(session, false)
+  show_session(session)
   notify("The source branch advanced. Claude is integrating it before review continues.")
   return true
 end
@@ -495,10 +499,6 @@ function M.shutdown(plan_id)
   local session = plan_id and running_session(plan_id)
   if not session then
     return
-  end
-  local win = terminal_window(session)
-  if win ~= -1 then
-    pcall(vim.api.nvim_win_close, win, true)
   end
   if session.channel and session.channel > 0 then
     pcall(vim.fn.jobstop, session.channel)

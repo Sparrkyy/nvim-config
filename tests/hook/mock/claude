@@ -16,6 +16,14 @@
 #   MOCK_CLAUDE_EXIT    exit code (default 0)
 #   MOCK_CLAUDE_STDERR  text to print on stderr
 
+input=""
+for arg in "$@"; do
+  if [ "$arg" = "stream-json" ]; then
+    IFS= read -r input || true
+    break
+  fi
+done
+
 if [ -n "${MOCK_CLAUDE_LOG:-}" ]; then
   {
     echo "--- invocation ---"
@@ -25,6 +33,7 @@ if [ -n "${MOCK_CLAUDE_LOG:-}" ]; then
     echo "--- env ---"
     echo "CLAUDE_NVIM_FOLLOW_DISABLE=${CLAUDE_NVIM_FOLLOW_DISABLE:-}"
     echo "cwd=$(pwd)"
+    echo "$input"
   } >> "$MOCK_CLAUDE_LOG"
 fi
 

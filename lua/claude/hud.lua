@@ -1,4 +1,4 @@
--- The job window in the top right.
+-- The job window in the bottom right.
 --
 -- It shows every one-shot Claude session that is running: what each one is
 -- doing, the tool it just ran, and the text it is writing. Several can run at
@@ -10,6 +10,7 @@
 local M = {}
 
 local uv = vim.uv or vim.loop
+local sessions = require("claude.sessions")
 
 M.opts = {
   width = 58,
@@ -259,8 +260,8 @@ end
 local function window_config()
   return {
     relative = "editor",
-    anchor = "NE",
-    row = 1,
+    anchor = "SE",
+    row = math.max(1, vim.o.lines - 2),
     col = math.max(1, vim.o.columns - 2),
     width = width(),
     height = 3,
@@ -381,11 +382,14 @@ end
 
 --- Add a job to the list. Returns its id.
 ---@param title string
+---@param spec table|nil
 ---@return number id
-function M.start(title)
-  next_id = next_id + 1
+function M.start(title, spec)
+  spec = vim.tbl_extend("force", spec or {}, { title = title or "Claude" })
+  local id = sessions.start(spec)
+  next_id = math.max(next_id, id)
   local job = {
-    id = next_id,
+    id = id,
     title = title or "Claude",
     started = uv.now(),
     frame = 1,
@@ -417,6 +421,7 @@ function M.tool(id, name, detail)
   if #job.activity > 20 then
     table.remove(job.activity, 1)
   end
+  sessions.tool(id, name, detail)
   draw()
 end
 
@@ -430,7 +435,12 @@ function M.append(id, chunk)
   if #job.text > 4000 then
     job.text = job.text:sub(-4000)
   end
+  sessions.append(id, chunk)
   draw()
+end
+
+function M.update(id, values)
+  sessions.update(id, values)
 end
 
 --- Mark one job finished. It lingers, then leaves the list.
@@ -443,6 +453,7 @@ function M.finish(id, ok, summary)
   job.failed = not ok
   job.result = summary
   job.finished_at = uv.now()
+  sessions.finish(id, ok, summary)
   draw()
 end
 

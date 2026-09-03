@@ -2,7 +2,7 @@
 -- carries it out on the file in front of you. Not tied to any diagnostic.
 --
 -- Use it for the small jobs: rename this, extract that, add the types, write
--- the doc comment. The work streams into the window in the top right.
+-- the doc comment. The work streams into the window in the bottom right.
 
 local M = {}
 

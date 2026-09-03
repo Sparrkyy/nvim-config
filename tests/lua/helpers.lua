@@ -50,16 +50,6 @@ function H.unmock_claudecode()
   package.loaded["claudecode.terminal"] = nil
 end
 
---- Make the mocked terminal buffer look like Claude has drawn its prompt.
-function H.render_claude_prompt(bufnr)
-  vim.bo[bufnr].modifiable = true
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
-    "╭──────────────────────────────────────╮",
-    "│ > ",
-    "╰──────────────────────────────────────╯",
-  })
-end
-
 --- Capture vim.notify calls for the duration of fn.
 ---@return table list of { msg, level }
 function H.capture_notify(fn)

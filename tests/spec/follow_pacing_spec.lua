@@ -4,13 +4,15 @@
 local H = require("helpers")
 
 describe("follow pacing", function()
-  local follow, dir, default_pace
+  local follow, dir, default_pace, default_enabled
 
   before_each(function()
     H.reset_buffers()
     follow = H.reload("claude.follow")
     dir = H.tmpdir()
     default_pace = follow.pace_ms
+    default_enabled = follow.enabled
+    follow.enabled = true
     follow.pace_ms = 0 -- most tests set this themselves
     follow.clear_queue()
   end)
@@ -21,6 +23,10 @@ describe("follow pacing", function()
 
   it("defaults to one second between replay steps", function()
     assert.equals(1000, default_pace)
+  end)
+
+  it("defaults follow mode to off", function()
+    assert.is_false(default_enabled)
   end)
 
   it("shows the jump at once when pacing is off", function()

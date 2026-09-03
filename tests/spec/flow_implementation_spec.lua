@@ -1,13 +1,18 @@
 local H = require("helpers")
 
 describe("flow.implementation", function()
-  local implementation, store, worktree, cwd, workdir, plan_id, sent, spawned
+  local implementation, store, worktree, cwd, workdir, plan_id, sent, spawned, manager_opened
 
   before_each(function()
     H.reset_buffers()
+    require("claude.sessions").reset()
     store = H.reload("flow.store")
     worktree = H.reload("flow.worktree")
     implementation = H.reload("flow.implementation")
+    require("claude.sessions").show_manager = function(opts)
+      manager_opened = opts
+      return true
+    end
     H.flow_root(store)
     cwd = H.tmpdir()
     workdir = H.tmpdir()
@@ -48,6 +53,7 @@ describe("flow.implementation", function()
   after_each(function()
     package.loaded["flow.review"] = nil
     package.loaded["flow.server"] = nil
+    require("claude.sessions").reset()
     H.reset_buffers()
   end)
 
@@ -69,6 +75,12 @@ describe("flow.implementation", function()
       "/goal go implement this plan http://127.0.0.1:4321/plan/" .. plan_id .. "?token=abc123",
       spawned[#spawned]
     )
+    local sessions = require("claude.sessions").list()
+    assert.equals(1, #sessions)
+    assert.equals("Flow implementation", sessions[1].kind)
+    assert.equals(meta.session_id, sessions[1].session_id)
+    assert.equals(sessions[1].id, manager_opened.selected_id)
+    assert.equals(-1, vim.fn.bufwinid(implementation.sessions[plan_id].buf))
   end)
 
   it("refuses implementation when the final plan page is unavailable", function()

@@ -9,6 +9,7 @@ describe("follow.handle", function()
   before_each(function()
     H.reset_buffers()
     follow = H.reload("claude.follow")
+    follow.enabled = true
     panel = H.reload("claude.panel")
     follow.pace_ms = 0
     follow.highlight_changes = true
@@ -34,6 +35,22 @@ describe("follow.handle", function()
     assert.equals("ok", result)
     assert.equals(path, H.current_file())
     assert.equals(3, vim.api.nvim_win_get_cursor(0)[1])
+  end)
+
+  it("ignores file events while follow mode is off", function()
+    local path = H.write_file(dir, "off.lua", { "before" })
+    follow.enabled = false
+    local result = follow.handle(H.encode({
+      kind = "open", event = "PreToolUse", tool = "Edit", path = path, line = 1,
+    }))
+    H.write_file(dir, "off.lua", { "after" })
+    follow.handle(H.encode({
+      kind = "open", event = "PostToolUse", tool = "Edit", path = path, line = 1,
+    }))
+    H.settle()
+    assert.equals("disabled", result)
+    assert.equals(0, follow.queue_length())
+    assert.is_false(path == H.current_file())
   end)
 
   it("finds the line from the old_string when no offset is given", function()

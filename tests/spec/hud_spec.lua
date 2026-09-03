@@ -1,4 +1,4 @@
--- The job window in the top right. It holds several sessions at once.
+-- The job window in the bottom right. It holds several sessions at once.
 
 local H = require("helpers")
 
@@ -165,6 +165,20 @@ describe("hud", function()
     local before = vim.api.nvim_get_current_win()
     hud.start("a job")
     assert.equals(before, vim.api.nvim_get_current_win())
+  end)
+
+  it("stays in the bottom right", function()
+    hud.start("a job")
+    local config
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      local candidate = vim.api.nvim_win_get_config(win)
+      if candidate.relative ~= "" then
+        config = candidate
+      end
+    end
+    assert.equals("SE", config.anchor)
+    assert.equals(vim.o.columns - 2, config.col)
+    assert.equals(vim.o.lines - 2, config.row)
   end)
 
   it("uses a scratch buffer that stays out of your buffer list", function()

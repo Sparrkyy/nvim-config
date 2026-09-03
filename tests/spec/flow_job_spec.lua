@@ -6,12 +6,14 @@ describe("flow.job", function()
   local job
 
   before_each(function()
+    require("claude.sessions").reset()
     job = H.reload("flow.job")
     require("claude.hud").close_all()
   end)
 
   after_each(function()
     require("claude.hud").close_all()
+    require("claude.sessions").reset()
   end)
 
   --- The command ------------------------------------------------------------
@@ -44,8 +46,12 @@ describe("flow.job", function()
     assert.equals("Read,Grep,Glob", flags(job.command({ prompt = "x" }))["--tools"])
   end)
 
-  it("leaves no session behind", function()
-    assert.is_true(vim.tbl_contains(job.command({ prompt = "x" }), "--no-session-persistence"))
+  it("keeps a resumable session and accepts live guidance", function()
+    local cmd = job.command({ prompt = "x", title = "Plan it", session_id = "session-1" })
+    assert.equals("stream-json", flags(cmd)["--input-format"])
+    assert.equals("session-1", flags(cmd)["--session-id"])
+    assert.equals("Plan it", flags(cmd)["--name"])
+    assert.is_false(vim.tbl_contains(cmd, "--no-session-persistence"))
   end)
 
   it("passes a JSON schema through as JSON", function()
@@ -191,6 +197,25 @@ describe("flow.job", function()
     end
     job.run({ prompt = "x" })
     assert.equals("1", seen.CLAUDE_NVIM_FOLLOW_DISABLE)
+  end)
+
+  it("writes the first prompt and live guidance to the same process", function()
+    local writes = {}
+    job.spawn = function()
+      return {
+        write = function(_, value)
+          table.insert(writes, value)
+        end,
+        kill = function() end,
+      }
+    end
+    local id = job.run({ prompt = "Make the plan", title = "Planning" })
+    assert.is_true(require("claude.sessions").send(id, "Keep the API stable"))
+
+    assert.equals(2, #writes)
+    assert.equals("Make the plan", vim.json.decode(writes[1]).message.content[1].text)
+    assert.equals("Keep the API stable", vim.json.decode(writes[2]).message.content[1].text)
+    job.stop_all()
   end)
 
   it("survives a line of stream JSON it cannot parse", function()

@@ -1,6 +1,6 @@
 # Tests
 
-618 tests cover this configuration. None of them start Claude, open a network
+721 tests cover this configuration. None of them start Claude, open a network
 connection, or spend a token.
 
 ## Run them
@@ -36,7 +36,7 @@ hook or in CI.
 | `follow_pacing_spec.lua` | The jump queue: order, the gap, deduplication, the depth cap. |
 | `follow_marks_spec.lua` | The change highlights on the lines Claude wrote. |
 | `follow_handle_spec.lua` | Every hook payload kind, and the bad ones. |
-| `follow_prompt_spec.lua` | Sending a prompt, including the cold-start wait. |
+| `follow_prompt_spec.lua` | Interrupt behavior when no Claude terminal is running. |
 | `follow_registry_spec.lua` | The RPC registry, the permission prompt, the statusline. |
 | `panel_spec.lua` | The plan and notes panels. |
 | `context_spec.lua` | The editor state sent with each prompt. |
@@ -45,6 +45,8 @@ hook or in CI.
 | `session_spec.lua` | The per-directory session: save, restore, cursor. |
 | `newfile_spec.lua` | `:New` and the parent directories on write. |
 | `oneshot_spec.lua` | The shared session engine, including two running at once. |
+| `sessions_spec.lua` | The Telescope agent manager, durable registry, tmux lifecycle, and IDE reconnection controls. |
+| `tmux_spec.lua` | Private tmux names and the commands that create or attach persistent Claude TUIs. |
 | `hud_spec.lua` | The job window: several jobs, trimming, colours, layout. |
 | `ask_spec.lua` | One-off requests, from the cursor and from a selection. |
 | `input_spec.lua` | The instruction composer: wrapping, growth, submit, cancel. |
@@ -63,8 +65,7 @@ Nothing reaches the real Claude CLI. These seams make that true.
 
 1. **The terminal.** `helpers.mock_claudecode()` puts a stub in
    `package.loaded["claudecode.terminal"]`. It records every send in a table
-   instead of writing to a process. Use `helpers.render_claude_prompt(bufnr)`
-   to make the stub look like Claude finished booting.
+   instead of writing to a process.
 2. **The hook payloads.** The specs call `follow.handle()` with base64 JSON
    that `helpers.encode()` builds. The real hook never runs.
 3. **The RPC calls.** `hook/mock/nvim` sits first on `PATH`. It writes each

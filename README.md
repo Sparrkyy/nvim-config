@@ -35,21 +35,25 @@ Already have a config? `mv ~/.config/nvim ~/.config/nvim.before` first.
     tests/         the test suite
 
 The leader key is `<space>`. Nothing outside this repository is needed except
-the plugins lazy.nvim fetches.
+the plugins lazy.nvim fetches. `tmux` adds persistent interactive Claude
+sessions; without it, the manager still works for the current Neovim process.
 
 ## Claude Code
 
-Claude runs in a terminal split on the right. The plugin speaks the same
-websocket protocol as the official VS Code extension. Claude sees your open
-file, your cursor, and your visual selection. Claude's edits open as native
-Neovim diffs.
+Claude runs inside the Telescope agent manager. Each interactive process lives
+in the private `tmux -L nvim-claude` server. A hidden Neovim terminal attaches
+to it and mounts the real Claude TUI in the manager's preview, so no standalone
+terminal split opens. Closing Neovim detaches that client without stopping
+Claude. The plugin speaks the same websocket protocol as the official VS Code
+extension. Claude sees your open file, cursor, and visual selection. Claude's
+edits open as native Neovim diffs.
 
 | Key          | Action                          |
 | ------------ | ------------------------------- |
-| `<leader>ac` | Toggle the Claude split         |
-| `<leader>af` | Focus the Claude split          |
-| `<leader>ar` | Resume a previous session       |
-| `<leader>aC` | Continue the last session       |
+| `<leader>ac` | Open the Claude manager         |
+| `<leader>af` | Focus the Claude manager        |
+| `<leader>ar` | Resume inside the manager       |
+| `<leader>aC` | Continue inside the manager     |
 | `<leader>am` | Select the model                |
 | `<leader>ab` | Add the current buffer          |
 | `<leader>as` | Send the selection (visual)     |
@@ -61,15 +65,15 @@ Neovim diffs.
 
 ## Working alongside the agent
 
-Claude runs in the right-hand split. You keep the left side.
+Claude stays in the manager instead of changing the editor's window layout.
 
 | Key          | Action                                      |
 | ------------ | ------------------------------------------- |
-| `<leader>ai` | Prompt Claude from anywhere (no focus loss) |
-| `<leader>ai` | Prompt about the selection (visual)         |
-| `<leader>aI` | Prompt with the current file and line       |
-| `<leader>ak` | Interrupt Claude mid-task                   |
-| `<leader>ap` | Start Claude in plan mode                   |
+| `<leader>ai` | Start a session in the agent manager        |
+| `<leader>ai` | Start with the selection (visual)           |
+| `<leader>aI` | Start with the current file and line        |
+| `<leader>ak` | Interrupt the latest managed Claude         |
+| `<leader>ap` | Start managed Claude in plan mode           |
 | `<leader>aF` | Toggle follow mode                          |
 
 ### Follow mode
@@ -80,9 +84,10 @@ on the line Claude is working on. A notification tells you when Claude
 finishes or needs you. There is no status line, so the job window in the top
 right is where you watch the work.
 
-Follow mode never takes focus. It stays quiet while you are in insert mode and
-while a diff is under review. Change hunks replay one at a time with a one-second
-gap, and the same gap applies when the next hunk is in another file.
+Follow mode is off by default. Press `<leader>aF` when you want to watch Claude
+work. It never takes focus, stays quiet while you are in insert mode or reviewing
+a diff, and can be turned off again with the same key. Change hunks replay one at
+a time with a one-second gap, including when the next hunk is in another file.
 
 The Lua side is `lua/claude/follow.lua`. The hook script is
 `claude/nvim-follow.sh` in this repository, which `install.sh` links into
@@ -126,6 +131,7 @@ never sees them.
 | `<leader>ae` | Fix the diagnostic under the cursor |
 | `<leader>aE` | Fix every diagnostic in this file, in one session |
 | `<leader>aO` | Close the progress window |
+| `<leader>al` | Open the Claude agent manager |
 
 `<leader>ao` asks you for an instruction, then sends it with the file name, the
 cursor line, and 40 lines of code either side. Use it for the small jobs:
@@ -147,7 +153,7 @@ It caps at 84 columns and 12 rows. Change that in `M.opts` in
 `<leader>ae` needs no typing. It picks the diagnostic under the cursor, or the
 nearest one, preferring the most severe on the line.
 
-**You watch the work.** A window in the top right lists every running session:
+**You watch the work.** A window in the bottom right lists every running session:
 
     ╭───────────────── Claude ×2 ─────────────────╮
     │ ⠸ rename the type to Bean               12s │
@@ -162,7 +168,8 @@ nearest one, preferring the most severe on the line.
 Each job hangs off a bar in its own colour: blue while it runs, green when it
 finishes, red when it fails. The border counts the sessions that are up. The
 elapsed time sits flush right. A finished job keeps its one-line summary for
-five seconds, then leaves the list.
+five seconds, then leaves the small progress window. It remains in the session
+list for one hour.
 
 The colours are ordinary highlight groups, each linked to something your
 colourscheme already defines. Override any of them:
@@ -186,9 +193,60 @@ tell which of several sessions changed what.
 
 Each session inherits the model configured for the Claude CLI. A fix can read,
 search, edit, and run Bash commands so it can diagnose and verify the change.
-Sessions use `--no-session-persistence` and `CLAUDE_NVIM_FOLLOW_DISABLE=1`, so
-their own hooks never drive your editor. The settings live in `M.opts` in
-`lua/claude/oneshot.lua`, and the window's in `lua/claude/hud.lua`.
+
+Press `<leader>al` to open the Telescope agent manager. It includes Flow
+planning, AI diff reviews, one-shot work, diagnostic fixes, Flow
+implementations, and Claude terminal buffers opened in Neovim. Running agents
+stay at the top. Moving through the list updates a large live preview. Terminal
+agents show their terminal screen; background agents show their input, tool
+activity, streamed output, directory, and elapsed time. Finished and failed
+scratch work stays available for one hour, then archives itself. Pinned work
+does not expire.
+
+Every preview follows the newest output instead of opening at line one.
+Background-agent previews reduce the internal request to one line, keep only
+recent activity, and give Claude's latest response the main reading area.
+
+Press `<leader>ai` to create a new interactive Claude Code session without
+opening a terminal split. The session starts inside the private tmux server and
+the manager opens with its live terminal on the right. In visual mode, the
+manager's message box starts with the selected file and line range. New and
+continued interactive sessions start in `auto` permission mode; `<leader>ap`
+is the explicit plan-mode exception and starts pinned. The manager stores resumable session
+metadata under Neovim's state directory and rediscovers live tmux sessions when
+Neovim restarts.
+
+The Telescope prompt is the selected agent's message box. Type an instruction
+and press `<CR>`. The text goes to that exact running Claude process, the prompt
+clears, and the manager stays open so you can watch the response or move to
+another agent.
+
+| Key | In the agent manager |
+| --- | -------------------- |
+| `<C-j>`, `<C-k>` | Select the next or previous agent |
+| `<CR>`, `<C-s>` | Send the prompt to the selected running agent |
+| `<C-c>` | Interrupt the selected agent |
+| `<C-t>`, `t` | Enter the selected agent's real Claude TUI |
+| `<C-x>`, `x` | Stop the process and keep its resumable conversation |
+| `p` | Pin or unpin long-term work |
+| `r` | Rename the selected session |
+| `<C-r>`, `R` | Reconnect a surviving process to this Neovim |
+| `d` | Forget a stopped or completed entry |
+| `<Esc>`, `q` | Close the manager |
+
+Guidance reaches the selected running process through its terminal. Press
+`<C-t>` when you want Claude Code's own keyboard interface instead of the
+manager prompt. A stopped session resumes by its saved Claude session ID when
+you send it another message. A tmux process that survived a Neovim restart
+keeps working, but its editor bridge belongs to the old Neovim process; `R`
+runs Claude's `/ide` reconnection flow for the current editor. The manager
+never falls back to a side panel.
+
+Background sessions use persisted UUIDs and
+`CLAUDE_NVIM_FOLLOW_DISABLE=1`. Their hooks do not drive your editor, but you
+can resume the conversation yourself. The engines live in
+`lua/claude/oneshot.lua` and `lua/flow/job.lua`. The shared session browser is
+in `lua/claude/sessions.lua`.
 
 ## What Claude sends and shows
 
@@ -254,7 +312,18 @@ local edits share the same review experience. Pass another base when needed,
 for example `:FlowReview main`. Use `:FlowPlanReview` to reopen the verified
 implementation review for the current Flow plan.
 
+Flow builds an AI review map in the background while the editable diff opens.
+The map groups files by behavior, explains its review order, marks advisory risk,
+and maps changed behavior to test evidence. `K` and `J` follow that guided file
+order when it is ready. The selected hunk shows one short AI briefing and its
+specific review checks; inactive hunks stay quiet. Press `gA` to rebuild the map.
+An edit marks the current map stale because its guidance describes the previous
+snapshot. Cached maps are reused only when the base and every changed file still
+match. Set `vim.g.flow_review_ai = false` to keep the deterministic core, tests,
+and supporting-file order without starting an AI job.
+
 1. A background Claude session runs in plan mode and writes a design document.
+   Open `<leader>al` while it runs to inspect its request or send guidance.
    The plan names the new tests, the existing hot-path tests, and the exact
    targeted verification commands. It does not require a full suite unless the
    targeted tests cannot prove the change.
@@ -271,7 +340,8 @@ implementation review for the current Flow plan.
    passes.
 3. Flow refuses to start when the source worktree has a tracked, staged,
    untracked, or deleted change. From a clean source, it creates a `flow/...`
-   branch and worktree, then opens a persistent Claude Code session there.
+   branch and worktree, then opens a persistent Claude Code session in the
+   agent manager.
    Flow sends `/goal go implement this plan <final plan URL>` so Claude Code's
    goal skill owns the implementation without copying the document into its
    4,000-character command. The Stop hook sends Claude back to work if it
@@ -303,6 +373,7 @@ implementation review for the current Flow plan.
 | `K`, `J` | Next or previous hunk inside the review only |
 | `]f`, `[f` | Review the next or previous changed file |
 | `<leader>o` | Toggle the ordered review overview |
+| `gA` | Refresh the AI review map |
 | `<leader>dr` | Send review feedback to Claude |
 | `<leader>dc` | Comment on the current review line |
 | `<leader>dS` | Submit review edits and comments |
@@ -324,9 +395,11 @@ the important commands and whether the review is verified, edited, or waiting
 on comments.
 
 The review has no file-tree split. It starts with one editable code window. For
-multi-file changes, a centered overview opens first and groups files as core,
-tests, and supporting changes. Within each group, larger changes appear first.
-Press `<CR>` to open a file or `<leader>o` to show or hide the overview at any time.
+multi-file changes, a centered review map opens first. AI groups the files into
+an intentional review journey and shows its reason for each group. Until that
+map is ready, Flow groups files as core, tests, and supporting changes; within
+each fallback group, larger changes appear first. Press `<CR>` to open a file or
+`<leader>o` to show or hide the overview at any time.
 
 In an independent branch review, the navigation, editing, and anchored-comment
 keys are the same. `s` saves edited buffers and durable local notes; Flow-only

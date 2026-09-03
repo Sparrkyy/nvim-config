@@ -1,4 +1,4 @@
--- Every plan in this directory, past and present.
+-- Every plan, across every repository, past and present.
 --
 -- Telescope is already in the config, so use it. Without it, fall back to
 -- vim.ui.select, which snacks.nvim draws as a float.
@@ -37,12 +37,14 @@ function M.label(meta)
     end
   end
   local progress = #steps > 0 and string.format("  %d/%d", done, #steps) or ""
+  local project = meta.cwd and vim.fn.fnamemodify(meta.cwd, ":t") or "unknown"
   return string.format(
-    "%s  %s  %s%s  %s",
+    "%s  %s  %s%s  [%s]  %s",
     ICON[meta.status] or "󰋼",
     os.date("%d %b %H:%M", meta.created or 0),
     meta.status or "?",
     progress,
+    project,
     meta.title or "Untitled"
   )
 end
@@ -60,10 +62,10 @@ local function choose(meta)
   end
 end
 
-function M.plans(cwd)
-  local plans = store.plans(cwd)
+function M.plans()
+  local plans = store.all_plans()
   if #plans == 0 then
-    vim.notify("No plans here yet. Press <leader>dn to start one.", vim.log.levels.INFO, { title = "Flow" })
+    vim.notify("No plans yet. Press <leader>dn to start one.", vim.log.levels.INFO, { title = "Flow" })
     return
   end
 
@@ -88,7 +90,11 @@ function M.plans(cwd)
       finder = finders.new_table({
         results = plans,
         entry_maker = function(meta)
-          return { value = meta, display = M.label(meta), ordinal = meta.title or meta.id }
+          return {
+            value = meta,
+            display = M.label(meta),
+            ordinal = string.format("%s %s", meta.title or meta.id, meta.cwd or ""),
+          }
         end,
       }),
       sorter = conf.generic_sorter({}),

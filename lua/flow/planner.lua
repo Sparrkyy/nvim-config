@@ -140,6 +140,7 @@ function M.start(context, opts)
   job.run({
     prompt = prompt,
     title = "Plan: " .. vim.trim(context):sub(1, 48),
+    kind = "Flow plan",
     cwd = cwd,
     tools = M.opts.tools,
     permission_mode = "plan",
@@ -213,6 +214,7 @@ function M.replan(plan_id, opts)
   job.run({
     prompt = prompt,
     title = string.format("Replan: %s (%d comments)", meta.title, #comments),
+    kind = "Flow plan",
     cwd = cwd,
     tools = M.opts.tools,
     permission_mode = "plan",

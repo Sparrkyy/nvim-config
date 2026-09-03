@@ -3,6 +3,8 @@ local M = {}
 local store = require("flow.store")
 local worktree = require("flow.worktree")
 
+M.analysis = require("flow.review_ai")
+
 M.ns = vim.api.nvim_create_namespace("flow_review_comments")
 M.diff_ns = vim.api.nvim_create_namespace("flow_review_inline_diff")
 M.overview_ns = vim.api.nvim_create_namespace("flow_review_overview")
@@ -26,6 +28,9 @@ local state = {
   file_by_path = {},
   file_index = nil,
   overview = nil,
+  analysis_status = "off",
+  analysis_result = nil,
+  analysis_token = nil,
   active_hunk_render_scheduled = false,
   inline_render_scheduled = {},
 }
@@ -37,6 +42,8 @@ local open_file
 local render_active_hunk
 local schedule_active_hunk_render
 local schedule_inline_render
+local start_ai_analysis
+local update_windows
 
 local function notify(message, level)
   vim.notify(message, level or vim.log.levels.INFO, { title = "Flow review" })
@@ -356,6 +363,7 @@ local function prepare_files(meta, changes)
       kind = kind,
       rank = rank,
       base_text = before,
+      current_text = current,
       binary = binary,
       hunks = hunks,
       added = added,
@@ -438,7 +446,7 @@ local REVIEW_MAPS = {
   { "n", "]f" }, { "n", "[f" },
   { "n", "]r" }, { "n", "[r" }, { "n", "gc" }, { "x", "gc" },
   { "n", "gC" }, { "n", "s" }, { "n", "a" }, { "n", "m" },
-  { "n", "u" }, { "n", "<leader>o" }, { "n", "q" }, { "n", "?" },
+  { "n", "u" }, { "n", "gA" }, { "n", "<leader>o" }, { "n", "q" }, { "n", "?" },
 }
 
 local function root_prefix(meta)
@@ -535,6 +543,153 @@ local function reindex_files()
   state.hunk_count = total
 end
 
+local function fallback_sort_files()
+  table.sort(state.files, function(a, b)
+    if a.rank ~= b.rank then
+      return a.rank < b.rank
+    end
+    local a_size = a.added + a.deleted
+    local b_size = b.added + b.deleted
+    if a_size ~= b_size then
+      return a_size > b_size
+    end
+    return a.file < b.file
+  end)
+  reindex_files()
+end
+
+local function attach_hunk_insights(entry)
+  local insights = state.analysis_result
+    and state.analysis_result.hunk_insights
+    and state.analysis_result.hunk_insights[entry.file]
+    or {}
+  for index, hunk in ipairs(entry.hunks) do
+    hunk.ai = insights[index]
+  end
+end
+
+local function refresh_open_overview()
+  local open = state.overview and state.overview.win and vim.api.nvim_win_is_valid(state.overview.win)
+  if open and M.overview then
+    M.overview()
+    M.overview()
+  end
+end
+
+local function apply_ai_analysis(analysis)
+  local current_file = state.location and state.location.file
+  local ordered = {}
+  local included = {}
+  for _, path in ipairs(analysis.order or {}) do
+    local entry = state.file_by_path[path]
+    if entry and not included[path] then
+      table.insert(ordered, entry)
+      included[path] = true
+    end
+  end
+  for _, entry in ipairs(state.files) do
+    if not included[entry.file] then
+      table.insert(ordered, entry)
+    end
+  end
+  state.files = ordered
+  state.analysis_result = analysis
+  state.analysis_status = "ready"
+  for _, entry in ipairs(state.files) do
+    entry.ai_group = analysis.group_by_file[entry.file]
+    entry.ai = analysis.file_insights[entry.file]
+    attach_hunk_insights(entry)
+  end
+  reindex_files()
+  if current_file and state.file_by_path[current_file] then
+    state.file_index = state.file_by_path[current_file].index
+  end
+  refresh_open_overview()
+  render_active_hunk()
+  update_windows()
+end
+
+local function review_intent(meta)
+  if state.plan_id then
+    local revision = store.revision(state.plan_id, nil, meta.cwd)
+    if revision and present(revision.plan_md) then
+      return revision.plan_md
+    end
+  end
+  local history = worktree.git(meta.worktree, {
+    "log", "--format=%s%n%b", meta.base_head .. "..HEAD",
+  })
+  if history.ok and present(history.out) then
+    return history.out
+  end
+  return meta.title
+end
+
+start_ai_analysis = function()
+  if not M.analysis.enabled() then
+    state.analysis_status = "off"
+    return false
+  end
+  local meta = active_meta()
+  if not meta or #state.files == 0 then
+    return false
+  end
+  local refresh_loading = state.analysis_status ~= "loading" or state.analysis_result ~= nil
+  local token = {}
+  state.analysis_token = token
+  state.analysis_status = "loading"
+  state.analysis_result = nil
+  for _, entry in ipairs(state.files) do
+    entry.ai = nil
+    entry.ai_group = nil
+    for _, hunk in ipairs(entry.hunks) do
+      hunk.ai = nil
+    end
+  end
+  for buf in pairs(state.buffers) do
+    if vim.api.nvim_buf_is_valid(buf) then
+      M.render_inline(buf)
+    end
+  end
+  fallback_sort_files()
+  if refresh_loading then
+    refresh_open_overview()
+  end
+  update_windows()
+  local started = M.analysis.start(meta, state.files, {
+    intent = review_intent(meta),
+    on_done = function(analysis)
+      if state.analysis_token ~= token or not state.tab or not vim.api.nvim_tabpage_is_valid(state.tab) then
+        return
+      end
+      apply_ai_analysis(analysis)
+      notify("AI review map ready.")
+    end,
+    on_error = function()
+      if state.analysis_token ~= token then
+        return
+      end
+      state.analysis_status = "unavailable"
+      refresh_open_overview()
+      update_windows()
+    end,
+  })
+  if not started and state.analysis_token == token and state.analysis_status == "loading" then
+    state.analysis_status = "unavailable"
+    refresh_open_overview()
+    update_windows()
+  end
+  return started
+end
+
+function M.refresh_analysis()
+  if not M.analysis.enabled() then
+    notify("AI review maps are disabled. Set vim.g.flow_review_ai to true to enable them.", vim.log.levels.INFO)
+    return false
+  end
+  return start_ai_analysis()
+end
+
 local function hunk_anchor(hunk, line_count)
   if hunk.new_count > 0 then
     return math.max(0, math.min(hunk.new_start - 1, line_count - 1)), true
@@ -580,10 +735,10 @@ local function deleted_display_lines(hunk)
   return lines
 end
 
-local function selected_deletion_hunk(buf, entry)
+local function selected_hunk(buf, entry)
   local cursor_line = vim.api.nvim_win_get_cursor(state.win)[1]
   for _, hunk in ipairs(entry.hunks) do
-    if not hunk.binary and #(hunk.deleted_lines or {}) > 0 and hunk.mark then
+    if hunk.mark then
       local mark = vim.api.nvim_buf_get_extmark_by_id(buf, M.diff_ns, hunk.mark, {})
       if #mark > 0 then
         local first = mark[1] + 1
@@ -732,6 +887,16 @@ local function set_hunk_virtual_lines(buf, entry, selected)
         if hunk.binary then
           table.insert(virtual, { { "  ◆ Binary file changed", "FlowReviewBinary" } })
         elseif hunk == selected then
+          if state.analysis_status == "ready" and hunk.ai then
+            local risk = entry.ai_group and entry.ai_group.risk or "MEDIUM"
+            table.insert(virtual, {
+              { "  ◆ " .. risk .. " · ", "FlowReviewAIRisk" .. risk },
+              { hunk.ai.briefing, "FlowReviewAI" },
+            })
+            for _, check in ipairs(hunk.ai.checks or {}) do
+              table.insert(virtual, { { "      Check · " .. check, "FlowReviewAIReason" } })
+            end
+          end
           for _, line in ipairs(hunk.deleted_virtual_lines or {}) do
             table.insert(virtual, line)
           end
@@ -774,7 +939,7 @@ render_active_hunk = function()
   if not entry then
     return
   end
-  local selected = not state.overview and selected_deletion_hunk(buf, entry) or nil
+  local selected = not state.overview and selected_hunk(buf, entry) or nil
   set_hunk_virtual_lines(buf, entry, selected)
 end
 
@@ -798,6 +963,7 @@ function M.render_inline(buf)
   end
   vim.api.nvim_buf_clear_namespace(buf, M.diff_ns, 0, -1)
   local current = buffer_text(buf)
+  entry.current_text = current
   entry.hunks = inline_hunks(entry.base_text, current, entry.binary)
   if #entry.hunks == 0 then
     local git_hunks = file_hunks(meta, entry.change)
@@ -805,6 +971,7 @@ function M.render_inline(buf)
       entry.hunks = inline_hunks("\0", "", true)
     end
   end
+  attach_hunk_insights(entry)
   reindex_files()
   local line_count = math.max(1, vim.api.nvim_buf_line_count(buf))
   for index, hunk in ipairs(entry.hunks) do
@@ -897,6 +1064,12 @@ function M.statusline()
   end
   local comments = pending > 0 and string.format(" · %d %s", pending, state.mode == "diff" and (pending == 1 and "note" or "notes") or (pending == 1 and "comment" or "comments")) or ""
   local progress = entry and string.format(" · %d/%d files · %d changes", entry.index, #state.files, state.hunk_count or 0) or ""
+  local ai_status = ({
+    loading = " · AI mapping",
+    ready = " · AI map",
+    stale = " · AI stale",
+    unavailable = " · AI unavailable",
+  })[state.analysis_status] or ""
   local actions
   if vim.o.columns < 120 then
     actions = "  ? help "
@@ -908,7 +1081,7 @@ function M.statusline()
   return table.concat({
     "%#FlowTitle# 󰐅 FLOW REVIEW ",
     "%#FlowHint# ", escape_statusline(meta.title),
-    escape_statusline(progress),
+    escape_statusline(progress .. ai_status),
     "%<",
     "%=",
     "%#", group, "# ", status, comments, " ",
@@ -916,7 +1089,7 @@ function M.statusline()
   })
 end
 
-local function update_windows()
+update_windows = function()
   local meta = active_meta()
   if not meta or not state.tab or not vim.api.nvim_tabpage_is_valid(state.tab) then
     return
@@ -944,7 +1117,11 @@ local function update_windows()
       else
         status = state.dirty and "%#FlowStale# EDITED" or "%#FlowDone# VERIFIED"
       end
-      local position = entry and string.format(" %02d/%02d · %s ", entry.index, #state.files, entry.kind) or " CONTEXT "
+      local section = entry and entry.kind or "CONTEXT"
+      if entry and state.analysis_status == "ready" and entry.ai_group then
+        section = entry.ai_group.risk .. " · " .. entry.ai_group.title
+      end
+      local position = entry and string.format(" %02d/%02d · %s ", entry.index, #state.files, section) or " CONTEXT "
       local totals = entry and string.format(" +%d −%d · %d changes ", entry.added, entry.deleted, #entry.hunks) or ""
       set_winbar(win, "%#FlowTitle#" .. position .. "%#FlowHint# " .. escape_statusline(file) .. escape_statusline(totals) .. "%=" .. status .. "%#FlowHint# · <leader>o overview ")
     end
@@ -967,6 +1144,12 @@ schedule_inline_render = function(buf)
 end
 
 local function mark_dirty(buf)
+  if state.analysis_status == "loading" or state.analysis_status == "ready" then
+    state.analysis_token = nil
+    state.analysis_status = "stale"
+    refresh_open_overview()
+    render_active_hunk()
+  end
   if state.dirty then
     return
   end
@@ -1010,6 +1193,7 @@ local function review_maps(buf, plan_id)
     M.comment(plan_id, nil, { buf = buf, start_line = first, end_line = last })
   end, "Flow: add review comment")
   map(buf, "n", "gC", function() M.remove_comment(plan_id) end, "Flow: remove review comment")
+  map(buf, "n", "gA", M.refresh_analysis, "Flow: refresh AI review map")
   map(buf, "n", "<leader>o", M.overview, "Flow: toggle review overview")
   if state.mode == "diff" then
     map(buf, "n", "s", function() M.submit() end, "Flow: save review edits and notes")
@@ -1161,6 +1345,9 @@ reset_state = function()
     file_by_path = {},
     file_index = nil,
     overview = nil,
+    analysis_status = "off",
+    analysis_result = nil,
+    analysis_token = nil,
     active_hunk_render_scheduled = false,
     inline_render_scheduled = {},
   }
@@ -1224,30 +1411,88 @@ function M.overview()
   end
   schedule_active_hunk_render()
   local meta = active_meta()
-  local lines = {
-    tostring(meta.title or "Code review"),
-    string.format("%d files · %d changes · core logic first", #state.files, state.hunk_count or 0),
-    "",
-  }
+  local lines = { tostring(meta.title or "Code review") }
   local file_rows = {}
-  for _, kind in ipairs({ "CORE", "TESTS", "SUPPORTING" }) do
-    local section = false
-    for _, entry in ipairs(state.files) do
-      if entry.kind == kind then
-        if not section then
-          table.insert(lines, kind)
-          section = true
+  local highlights = { [1] = "FlowTitle" }
+  local function add(line, group)
+    table.insert(lines, line)
+    if group then
+      highlights[#lines] = group
+    end
+    return #lines
+  end
+  local status_text = ({
+    loading = "AI is building a review journey · deterministic order is ready now",
+    ready = "AI-guided review journey · risk and ordering reasons are advisory",
+    stale = "AI review map is stale after an edit · press gA to refresh",
+    unavailable = "AI review map unavailable · deterministic order is active",
+    off = "Deterministic review order · AI review maps are disabled",
+  })[state.analysis_status] or "Deterministic review order"
+  add(string.format("%d files · %d changes · %s", #state.files, state.hunk_count or 0, status_text), "FlowHint")
+  if state.analysis_result and (state.analysis_status == "ready" or state.analysis_status == "stale") then
+    if state.analysis_result.summary ~= "" then
+      add("  " .. state.analysis_result.summary, "FlowReviewAI")
+    end
+    add("")
+    for _, group in ipairs(state.analysis_result.groups or {}) do
+      add(string.format("◆ %-6s  %s", group.risk, group.title), "FlowReviewAIRisk" .. group.risk)
+      if group.intent ~= "" then
+        add("  " .. group.intent, "FlowReviewAI")
+      end
+      if group.reason ~= "" then
+        add("  Why here · " .. group.reason, "FlowReviewAIReason")
+      end
+      for _, file in ipairs(group.files or {}) do
+        local entry = state.file_by_path[file.path]
+        if entry then
+          local marker = entry.index == state.file_index and "›" or " "
+          local summary = file.summary ~= "" and " · " .. file.summary or ""
+          local row = add(string.format(
+            " %s %02d  %-2s  %s  +%d −%d%s",
+            marker,
+            entry.index,
+            entry.status,
+            entry.file,
+            entry.added,
+            entry.deleted,
+            summary
+          ))
+          file_rows[row] = entry.index
         end
-        local marker = entry.index == state.file_index and "›" or " "
-        table.insert(lines, string.format(" %s %02d  %-2s  %s  +%d −%d  %d %s", marker, entry.index, entry.status, entry.file, entry.added, entry.deleted, #entry.hunks, #entry.hunks == 1 and "change" or "changes"))
-        file_rows[#lines] = entry.index
+      end
+      add("")
+    end
+    if #state.analysis_result.test_map > 0 then
+      add("VERIFICATION", "FlowReviewSection")
+      for _, item in ipairs(state.analysis_result.test_map) do
+        local icon = item.status == "COVERED" and "✓" or item.status == "MISSING" and "!" or "~"
+        local group = item.status == "COVERED" and "FlowReviewAICovered" or item.status == "MISSING" and "FlowReviewAIMissing" or "FlowReviewAIReason"
+        local evidence = item.evidence ~= "" and " · " .. item.evidence or ""
+        add(string.format("  %s %-7s %s%s", icon, item.status, item.behavior, evidence), group)
+      end
+      add("")
+    end
+  else
+    add("")
+    for _, kind in ipairs({ "CORE", "TESTS", "SUPPORTING" }) do
+      local section = false
+      for _, entry in ipairs(state.files) do
+        if entry.kind == kind then
+          if not section then
+            add(kind, "FlowReviewSection")
+            section = true
+          end
+          local marker = entry.index == state.file_index and "›" or " "
+          local row = add(string.format(" %s %02d  %-2s  %s  +%d −%d  %d %s", marker, entry.index, entry.status, entry.file, entry.added, entry.deleted, #entry.hunks, #entry.hunks == 1 and "change" or "changes"))
+          file_rows[row] = entry.index
+        end
+      end
+      if section then
+        add("")
       end
     end
-    if section then
-      table.insert(lines, "")
-    end
   end
-  table.insert(lines, "<CR> open file   K/J move through changes   <leader>o/q close overview")
+  add("<CR> open file   K/J review journey   gA refresh AI   <leader>o/q close", "FlowHint")
   local longest = 0
   for _, line in ipairs(lines) do
     longest = math.max(longest, vim.fn.strdisplaywidth(line))
@@ -1277,17 +1522,12 @@ function M.overview()
   vim.wo[win].cursorline = true
   vim.wo[win].wrap = false
   vim.wo[win].winhighlight = "Normal:NormalFloat,FloatBorder:FlowBorder,CursorLine:Visual"
-  vim.api.nvim_buf_add_highlight(buf, M.overview_ns, "FlowTitle", 0, 0, -1)
-  vim.api.nvim_buf_add_highlight(buf, M.overview_ns, "FlowHint", 1, 0, -1)
-  vim.api.nvim_buf_add_highlight(buf, M.overview_ns, "FlowHint", #lines - 1, 0, -1)
+  for row, group in pairs(highlights) do
+    vim.api.nvim_buf_add_highlight(buf, M.overview_ns, group, row - 1, 0, -1)
+  end
   for row, index in pairs(file_rows) do
     if index == state.file_index then
       vim.api.nvim_buf_add_highlight(buf, M.overview_ns, "FlowCurrent", row - 1, 0, -1)
-    end
-  end
-  for row, line in ipairs(lines) do
-    if line == "CORE" or line == "TESTS" or line == "SUPPORTING" then
-      vim.api.nvim_buf_add_highlight(buf, M.overview_ns, "FlowReviewSection", row - 1, 0, -1)
     end
   end
   state.overview = { buf = buf, win = win, file_rows = file_rows }
@@ -1297,6 +1537,7 @@ function M.overview()
   map(buf, "n", "q", dismiss, "Flow: close review overview")
   map(buf, "n", "<Esc>", dismiss, "Flow: close review overview")
   map(buf, "n", "<leader>o", dismiss, "Flow: close review overview")
+  map(buf, "n", "gA", M.refresh_analysis, "Flow: refresh AI review map")
   map(buf, "n", "<CR>", function()
     local target = file_rows[vim.api.nvim_win_get_cursor(0)[1]]
     if target then
@@ -1412,6 +1653,9 @@ local function open_view(meta, opts)
   state.marks = {}
   state.files = files
   state.file_by_path = {}
+  state.analysis_status = M.analysis.enabled() and "loading" or "off"
+  state.analysis_result = nil
+  state.analysis_token = nil
   for _, entry in ipairs(files) do
     state.file_by_path[entry.file] = entry
   end
@@ -1443,6 +1687,7 @@ local function open_view(meta, opts)
     M.overview()
   end
   notify(opts.open_message)
+  start_ai_analysis()
   return true
 end
 
@@ -1467,9 +1712,32 @@ local function review_root(cwd)
   if cwd and cwd ~= "" then
     return worktree.repository(cwd)
   end
+
+  local starts = {}
+  local active = active_meta()
+  if state.mode == "flow" and active and present(active.source_root) then
+    table.insert(starts, active.source_root)
+  end
+  table.insert(starts, vim.fn.getcwd())
   local name = vim.api.nvim_buf_get_name(0)
-  local start = name ~= "" and vim.fn.fnamemodify(name, ":h") or vim.fn.getcwd()
-  return worktree.repository(start)
+  if name ~= "" then
+    table.insert(starts, vim.fn.fnamemodify(name, ":h"))
+  end
+
+  local seen = {}
+  local last_err
+  for _, start in ipairs(starts) do
+    local resolved = vim.fn.resolve(vim.fn.fnamemodify(start, ":p"))
+    if not seen[resolved] then
+      seen[resolved] = true
+      local root, err = worktree.repository(resolved)
+      if root then
+        return root
+      end
+      last_err = err or last_err
+    end
+  end
+  return nil, last_err or "This directory is not a Git repository."
 end
 
 local function resolve_base(root, requested)
@@ -1874,6 +2142,7 @@ function M.help()
     "]c / [c   next / previous hunk (alternate)",
     "]f / [f   next / previous file",
     "<leader>o  toggle the ordered file overview",
+    "gA         refresh the AI review map",
     "gc         add an anchored note on the line or selection",
     "]r / [r   next / previous note",
     "gC         remove the note under the cursor",
@@ -1896,7 +2165,7 @@ function M.help()
       "This is the verified Flow implementation review.",
     })
   end
-  table.insert(lines, "Current lines are a normal editable Neovim buffer. Deleted base lines are virtual and start with −.")
+  table.insert(lines, "Current lines are a normal editable Neovim buffer. AI guidance and deleted base lines are virtual.")
   notify(table.concat(lines, "\n"))
 end
 

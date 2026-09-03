@@ -5,12 +5,13 @@
 -- reads the repository and hands back text, and Flow decides what to do with
 -- it. So the stream parsing is shared in spirit, not in code.
 --
--- Progress shows in the window in the top right, the same one oneshot uses.
+-- Progress shows in the window in the bottom right, the same one oneshot uses.
 
 local M = {}
 
 local uv = vim.uv or vim.loop
 local hud = require("claude.hud")
+local sessions = require("claude.sessions")
 
 M.opts = {
   command = "claude", -- the tests replace M.spawn instead
@@ -90,6 +91,7 @@ local function on_event(job_id, event)
   local job = M.jobs[job_id]
   if event.type == "system" and event.subtype == "init" and job then
     job.session_id = event.session_id
+    hud.update(job_id, { session_id = event.session_id })
     return
   end
 
@@ -98,6 +100,12 @@ local function on_event(job_id, event)
     job.session_id = event.session_id or job.session_id
     job.cost = event.total_cost_usd
     job.is_error = event.is_error
+    hud.update(job_id, { session_id = job.session_id })
+    if job.proc and job.proc.write then
+      pcall(job.proc.write, job.proc, nil)
+    else
+      job.close_input = true
+    end
   end
 end
 
@@ -163,7 +171,8 @@ function M.command(spec)
   local cmd = {
     M.opts.command,
     "-p",
-    spec.prompt,
+    "--input-format",
+    "stream-json",
     "--output-format",
     "stream-json",
     "--include-partial-messages",
@@ -175,7 +184,10 @@ function M.command(spec)
     -- A background job has nobody to answer a question, so take the tool away.
     "--disallowedTools",
     "AskUserQuestion",
-    "--no-session-persistence",
+    "--session-id",
+    spec.session_id or sessions.uuid(spec.title),
+    "--name",
+    spec.title or "Flow",
   }
   if spec.max_turns then
     vim.list_extend(cmd, { "--max-turns", tostring(spec.max_turns) })
@@ -190,6 +202,23 @@ function M.command(spec)
     end
   end
   return cmd
+end
+
+function M.write(proc, prompt)
+  if not proc or not proc.write or type(prompt) ~= "string" or vim.trim(prompt) == "" then
+    return false
+  end
+  local ok, encoded = pcall(vim.json.encode, {
+    type = "user",
+    message = {
+      role = "user",
+      content = { { type = "text", text = prompt } },
+    },
+  })
+  if not ok then
+    return false
+  end
+  return pcall(proc.write, proc, encoded .. "\n")
 end
 
 --- Run one background session.
@@ -215,12 +244,24 @@ function M.run(spec)
     return nil
   end
 
+  spec.session_id = spec.session_id or sessions.uuid(spec.title or spec.prompt:sub(1, 40))
+  local cwd = spec.cwd or vim.fn.getcwd()
   local env = vim.tbl_extend("force", {}, uv.os_environ())
   -- This session must not drive the editor. The follow hook checks this.
   env.CLAUDE_NVIM_FOLLOW_DISABLE = "1"
 
-  local job_id = hud.start(spec.title or "Flow")
-  M.jobs[job_id] = { title = spec.title, started = uv.now() }
+  local resume_args = {
+    "--permission-mode", spec.permission_mode or "plan",
+    "--tools", spec.tools or "Read,Grep,Glob",
+  }
+  local job_id = hud.start(spec.title or "Flow", {
+    kind = spec.kind or "Flow",
+    prompt = spec.prompt,
+    cwd = cwd,
+    session_id = spec.session_id,
+    resume_args = resume_args,
+  })
+  M.jobs[job_id] = { title = spec.title, started = uv.now(), session_id = spec.session_id }
   pcall(vim.cmd, "redrawstatus")
 
   local buffer = ""
@@ -247,9 +288,10 @@ function M.run(spec)
   end
 
   local proc = M.spawn(M.command(spec), {
-    cwd = spec.cwd or vim.fn.getcwd(),
+    cwd = cwd,
     env = env,
     text = true,
+    stdin = true,
     timeout = spec.timeout_ms or M.opts.timeout_ms,
     stdout = function(err, chunk)
       if err or not chunk then
@@ -293,6 +335,17 @@ function M.run(spec)
   -- otherwise, and keeps spending after you quit.
   if M.jobs[job_id] then
     M.jobs[job_id].proc = proc
+    if M.jobs[job_id].close_input and proc and proc.write then
+      pcall(proc.write, proc, nil)
+    else
+      M.write(proc, spec.prompt)
+      hud.update(job_id, {
+        send = function(text)
+          local running = M.jobs[job_id]
+          return running ~= nil and M.write(running.proc, text)
+        end,
+      })
+    end
   end
 
   return job_id

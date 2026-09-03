@@ -17,6 +17,7 @@ vim.opt.swapfile = false
 vim.opt.shadafile = "NONE"
 vim.opt.more = false
 vim.g.mapleader = " "
+vim.g.flow_review_ai = false
 
 -- Plenary spawns a child Neovim per spec file. It must use this same file,
 -- or the child loads the real config and its plugin manager.

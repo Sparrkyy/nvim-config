@@ -54,6 +54,13 @@ local function define_highlights()
     FlowReviewHunkHeader = { link = "DiagnosticInfo" },
     FlowReviewBinary = { link = "DiagnosticWarn" },
     FlowReviewSection = { link = "Title" },
+    FlowReviewAI = { link = "NormalFloat" },
+    FlowReviewAIReason = { link = "Comment" },
+    FlowReviewAIRiskHIGH = { link = "DiagnosticError" },
+    FlowReviewAIRiskMEDIUM = { link = "DiagnosticWarn" },
+    FlowReviewAIRiskLOW = { link = "DiagnosticInfo" },
+    FlowReviewAICovered = { link = "DiagnosticOk" },
+    FlowReviewAIMissing = { link = "DiagnosticError" },
   }
   for name, spec in pairs(groups) do
     spec.default = true
@@ -243,7 +250,7 @@ local function commands()
 
   cmd("FlowPlans", function()
     require("flow.picker").plans()
-  end, { desc = "List every plan in this directory" })
+  end, { desc = "List plans across every repository" })
 end
 
 local function keymaps()

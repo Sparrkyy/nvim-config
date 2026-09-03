@@ -1,10 +1,12 @@
 -- Reload the configuration without leaving Neovim.
 --
 -- It drops every `config.*`, `claude.*`, `flow.*`, and `ghostty.*` module from the Lua
--- cache, then re-runs them in the order init.lua uses. Two modules are never
+-- cache, then re-runs them in the order init.lua uses. Four modules are never
 -- dropped:
 --   config.lazy    lazy.setup() must run once per session
 --   config.reload  this file is running
+--   claude.sessions  active processes and terminal buffers must stay registered
+--   claude.tmux  the persistent session backend belongs to that registry
 --
 -- Plugin options do not reload. lazy.nvim hands `opts` to a plugin's setup()
 -- once, when the plugin loads. Change a plugin spec and you must restart.
@@ -12,7 +14,12 @@
 local M = {}
 
 local PATTERNS = { "^config%.", "^claude%.", "^ghostty$", "^ghostty%.", "^flow$", "^flow%." }
-local KEEP = { ["config.lazy"] = true, ["config.reload"] = true }
+local KEEP = {
+  ["config.lazy"] = true,
+  ["config.reload"] = true,
+  ["claude.sessions"] = true,
+  ["claude.tmux"] = true,
+}
 
 -- The modules init.lua requires, in its order.
 local PLAIN = { "config.options", "config.keymaps", "config.autocmds" }

@@ -1,7 +1,7 @@
 -- One-shot Claude sessions.
 --
 -- A short headless `claude -p` run, separate from the Claude in your split.
--- It streams its progress into the window in the top right, edits the file,
+-- It streams its progress into the window in the bottom right, edits the file,
 -- and exits. Your main conversation never sees it.
 --
 -- claude.fixit and claude.ask both drive this.
@@ -10,6 +10,7 @@ local M = {}
 
 local uv = vim.uv or vim.loop
 local hud = require("claude.hud")
+local sessions = require("claude.sessions")
 
 M.opts = {
   command = "claude", -- overridden in the tests by a mock
@@ -100,9 +101,18 @@ local function on_event(job_id, event)
         if block.type == "tool_use" then
           hud.tool(job_id, block.name, tool_detail(block.name, block.input))
         elseif block.type == "thinking" and block.thinking then
-          hud.append(block.thinking)
+          hud.append(job_id, block.thinking)
         end
       end
+    end
+    return
+  end
+
+  if event.type == "system" and event.subtype == "init" then
+    local job = M.jobs[job_id]
+    if job and event.session_id then
+      job.session_id = event.session_id
+      hud.update(job_id, { session_id = event.session_id })
     end
     return
   end
@@ -111,6 +121,13 @@ local function on_event(job_id, event)
     local job = M.jobs[job_id]
     if job then
       job.result = event.result
+      job.session_id = event.session_id or job.session_id
+      hud.update(job_id, { session_id = job.session_id })
+      if job.proc and job.proc.write then
+        pcall(job.proc.write, job.proc, nil)
+      else
+        job.close_input = true
+      end
     end
     M.last_result = event.result
   end
@@ -168,38 +185,51 @@ function M.run(spec)
     before = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   end
 
+  local session_id = spec.session_id or sessions.uuid(spec.title or spec.prompt:sub(1, 40))
+  local cwd = spec.cwd or vim.fn.getcwd()
+  local tools = spec.tools or M.opts.tools
   local cmd = {
     M.opts.command,
-    "-p", spec.prompt,
+    "-p",
+    "--input-format", "stream-json",
     "--output-format", "stream-json",
     "--include-partial-messages",
     "--verbose",
     "--permission-mode", "acceptEdits",
-    "--allowedTools", spec.tools or M.opts.tools,
+    "--allowedTools", tools,
     "--max-turns", tostring(M.opts.max_turns),
-    "--no-session-persistence",
+    "--session-id", session_id,
+    "--name", spec.title or "Claude one-shot",
   }
 
   local env = vim.tbl_extend("force", {}, uv.os_environ())
   -- This session must not drive the editor. The follow hook checks this.
   env.CLAUDE_NVIM_FOLLOW_DISABLE = "1"
 
-  local job_id = hud.start(spec.title or "Claude")
+  local job_id = hud.start(spec.title or "Claude", {
+    kind = spec.kind or "one-shot",
+    prompt = spec.prompt,
+    cwd = cwd,
+    session_id = session_id,
+    resume_args = { "--permission-mode", "acceptEdits", "--allowedTools", tools },
+  })
   M.jobs[job_id] = {
     title = spec.title,
     bufnr = bufnr,
     before = before,
     started = (uv.now()),
+    session_id = session_id,
   }
   pcall(vim.cmd, "redrawstatus")
 
   local buffer = ""
   local stderr = {}
 
-  vim.system(cmd, {
-    cwd = vim.fn.getcwd(),
+  local proc = vim.system(cmd, {
+    cwd = cwd,
     env = env,
     text = true,
+    stdin = true,
     timeout = M.opts.timeout_ms,
     stdout = function(err, chunk)
       if err or not chunk then
@@ -216,7 +246,6 @@ function M.run(spec)
     end,
   }, function(out)
     vim.schedule(function()
-      -- Anything still in the buffer with no trailing newline.
       if vim.trim(buffer) ~= "" then
         local decoded_ok, decoded = pcall(vim.json.decode, vim.trim(buffer))
         if decoded_ok then
@@ -252,7 +281,39 @@ function M.run(spec)
     end)
   end)
 
+  if M.jobs[job_id] then
+    M.jobs[job_id].proc = proc
+    if M.jobs[job_id].close_input and proc and proc.write then
+      pcall(proc.write, proc, nil)
+    else
+      M.write(proc, spec.prompt)
+      hud.update(job_id, {
+        send = function(text)
+          local running = M.jobs[job_id]
+          return running ~= nil and M.write(running.proc, text)
+        end,
+      })
+    end
+  end
+
   return job_id
+end
+
+function M.write(proc, prompt)
+  if not proc or not proc.write or type(prompt) ~= "string" or vim.trim(prompt) == "" then
+    return false
+  end
+  local ok, encoded = pcall(vim.json.encode, {
+    type = "user",
+    message = {
+      role = "user",
+      content = { { type = "text", text = prompt } },
+    },
+  })
+  if not ok then
+    return false
+  end
+  return pcall(proc.write, proc, encoded .. "\n")
 end
 
 --- Which lines differ between two versions of a file.

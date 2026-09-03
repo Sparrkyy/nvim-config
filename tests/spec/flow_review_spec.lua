@@ -1,12 +1,13 @@
 local H = require("helpers")
 
 describe("flow.review", function()
-  local review, store, worktree, cwd, workdir, plan_id
+  local review, review_ai, store, worktree, cwd, workdir, plan_id
 
   before_each(function()
     H.reset_buffers()
     store = H.reload("flow.store")
     worktree = H.reload("flow.worktree")
+    review_ai = H.reload("flow.review_ai")
     review = H.reload("flow.review")
     H.flow_root(store)
     cwd = H.tmpdir()
@@ -51,6 +52,7 @@ describe("flow.review", function()
 
   after_each(function()
     review.close()
+    vim.g.flow_review_ai = false
     package.loaded["flow.implementation"] = nil
     H.reset_buffers()
   end)
@@ -335,6 +337,56 @@ describe("flow.review", function()
     assert.equals("review_ready", store.meta(plan_id, cwd).status)
   end)
 
+  it("reviews the checked out source branch instead of an open Flow worktree", function()
+    H.write_file(cwd, "lua/a.lua", { "local value = 3", "return value" })
+    local repository_start
+    local branch_root
+    worktree.repository = function(start)
+      repository_start = vim.fn.resolve(vim.fn.fnamemodify(start, ":p"))
+      return cwd
+    end
+    worktree.head = function(root)
+      return root == workdir and "head" or "source-head"
+    end
+    worktree.branch = function(root)
+      branch_root = root
+      return "feature/current-checkout"
+    end
+    worktree.git = function(root, args)
+      if args[1] == "rev-parse" then
+        return { ok = true, out = "master-tip\n", err = "" }
+      end
+      if args[1] == "merge-base" then
+        return { ok = true, out = "common-base\n", err = "" }
+      end
+      if args[1] == "diff" and args[2] == "--name-status" then
+        return { ok = true, out = "M\tlua/a.lua", err = "" }
+      end
+      if args[1] == "diff" then
+        return { ok = true, out = "@@ -1 +1 @@ change value", err = "" }
+      end
+      if args[1] == "show" then
+        return { ok = true, out = "local value = 1\nreturn value", err = "" }
+      end
+      if args[1] == "ls-files" then
+        return { ok = true, out = "", err = "" }
+      end
+      if args[1] == "log" then
+        return { ok = true, out = "Change the value", err = "" }
+      end
+      return { ok = false, out = "", err = "unexpected " .. root }
+    end
+
+    H.capture_notify(function()
+      assert.is_true(review.open(plan_id))
+      assert.is_true(review.open_diff("master"))
+    end)
+
+    assert.equals(vim.fn.resolve(vim.fn.fnamemodify(cwd, ":p")), repository_start)
+    assert.equals(cwd, branch_root)
+    assert.is_truthy(review.statusline():match("feature/current%-checkout"))
+  end)
+
   it("falls back to main when the repository has no master ref", function()
     worktree.repository = function()
       return workdir
@@ -593,6 +645,140 @@ describe("flow.review", function()
     assert.is_true(saw_active_deletion)
   end)
 
+  it("upgrades the overview and hunk navigation with an AI review journey", function()
+    vim.g.flow_review_ai = true
+    H.write_file(workdir, "tests/a_spec.lua", { "it('covers the new value')" })
+    worktree.git = function(_, args)
+      if args[1] == "diff" and args[2] == "--name-status" then
+        return { ok = true, out = "M\tlua/a.lua\nM\ttests/a_spec.lua", err = "" }
+      end
+      if args[1] == "diff" then
+        return { ok = true, out = "@@ -1 +1 @@ changed", err = "" }
+      end
+      if args[1] == "show" then
+        if args[2]:match(":tests/a_spec%.lua$") then
+          return { ok = true, out = "it('covers the old value')", err = "" }
+        end
+        return { ok = true, out = "local value = 1\nreturn value", err = "" }
+      end
+      if args[1] == "ls-files" then
+        return { ok = true, out = "", err = "" }
+      end
+      if args[1] == "log" then
+        return { ok = true, out = "Change the value", err = "" }
+      end
+      return { ok = false, out = "", err = "unexpected" }
+    end
+    review.analysis.enabled = function()
+      return true
+    end
+    review.analysis.start = function(_, files, opts)
+      local analysis = assert(review_ai.normalize({
+        summary = "The value contract and its verification changed.",
+        groups = {
+          {
+            title = "Expected behavior",
+            intent = "Read the boundary example before its implementation.",
+            risk = "HIGH",
+            reason = "The test states the final contract.",
+            files = {
+              {
+                path = "tests/a_spec.lua",
+                summary = "Changes the expected value.",
+                reason = "This defines the review target.",
+                hunks = {
+                  {
+                    index = 1,
+                    briefing = "Changes the expected value boundary.",
+                    checks = { "Confirm that the implementation matches this example." },
+                  },
+                },
+              },
+            },
+          },
+          {
+            title = "Implementation",
+            intent = "Review the value change.",
+            risk = "MEDIUM",
+            reason = "This implements the new contract.",
+            files = {
+              {
+                path = "lua/a.lua",
+                summary = "Updates the returned value.",
+                reason = "Read after the expected behavior.",
+                hunks = {
+                  {
+                    index = 1,
+                    briefing = "Updates the implementation value.",
+                    checks = {},
+                  },
+                },
+              },
+            },
+          },
+        },
+        test_map = {
+          {
+            behavior = "Return the new value",
+            status = "COVERED",
+            evidence = "tests/a_spec.lua:1",
+          },
+        },
+      }, files))
+      opts.on_done(analysis)
+      return true
+    end
+
+    H.capture_notify(function()
+      assert.is_true(review.open(plan_id))
+    end)
+    H.settle()
+    local overview_lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    local test_row, implementation_row
+    for row, line in ipairs(overview_lines) do
+      if not test_row and line:find("tests/a_spec.lua", 1, true) then
+        test_row = row
+      elseif not implementation_row and line:find("lua/a.lua", 1, true) then
+        implementation_row = row
+      end
+    end
+    assert.is_true(test_row < implementation_row)
+    assert.is_truthy(table.concat(overview_lines, "\n"):match("HIGH%s+Expected behavior"))
+    assert.is_truthy(table.concat(overview_lines, "\n"):match("COVERED%s+Return the new value"))
+    assert.is_truthy(review.statusline():match("AI map"))
+
+    assert.is_true(review.overview())
+    assert.is_true(review.next(plan_id))
+    H.settle()
+    assert.is_truthy(vim.api.nvim_buf_get_name(0):match("tests/a_spec%.lua$"))
+    local briefing
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(0, review.diff_ns, 0, -1, { details = true })) do
+      for _, virtual in ipairs(mark[4].virt_lines or {}) do
+        local text = ""
+        for _, chunk in ipairs(virtual) do
+          text = text .. chunk[1]
+        end
+        if text:find("Changes the expected value boundary", 1, true) then
+          briefing = text
+        end
+      end
+    end
+    assert.is_truthy(briefing:match("HIGH"))
+    vim.api.nvim_buf_set_lines(0, 0, 1, false, { "it('covers an edited value')" })
+    vim.api.nvim_exec_autocmds("TextChanged", { buffer = 0 })
+    H.settle()
+    assert.is_truthy(review.statusline():match("AI stale"))
+    local stale_briefing = false
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(0, review.diff_ns, 0, -1, { details = true })) do
+      for _, virtual in ipairs(mark[4].virt_lines or {}) do
+        for _, chunk in ipairs(virtual) do
+          stale_briefing = stale_briefing or chunk[1]:find("Changes the expected value boundary", 1, true) ~= nil
+        end
+      end
+    end
+    assert.is_false(stale_briefing)
+  end)
+
   it("maps review navigation locally without taking the editing o key", function()
     H.capture_notify(function()
       assert.is_true(review.open(plan_id))
@@ -609,6 +795,7 @@ describe("flow.review", function()
     assert.equals("Flow: previous changed hunk", active.J)
     assert.equals("Flow: next changed hunk", active.K)
     assert.is_nil(active.o)
+    assert.equals("Flow: refresh AI review map", active.gA)
     assert.equals("Flow: toggle review overview", active[" o"] or active["<Space>o"])
 
     assert.is_true(review.close())
@@ -616,6 +803,7 @@ describe("flow.review", function()
     local closed = local_maps()
     assert.is_nil(closed.J)
     assert.is_nil(closed.K)
+    assert.is_nil(closed.gA)
     assert.is_nil(closed[" o"])
     assert.is_nil(closed["<Space>o"])
   end)

@@ -181,6 +181,7 @@ describe("follow statusline", function()
   end)
 
   it("shows the pending jump count", function()
+    follow.enabled = true
     follow.pace_ms = 5000
     local dir = H.tmpdir()
     for i = 1, 3 do
