@@ -42,6 +42,7 @@ hook or in CI.
 | `context_spec.lua` | The editor state sent with each prompt. |
 | `bufstack_spec.lua` | The J and K buffer stack. |
 | `colorscheme_spec.lua` | The Ghostty palette and the highlight groups. |
+| `autocmds_spec.lua` | The editor-wide autocmds: the yank flash, the reload watch, indent, the terminal gutter. |
 | `session_spec.lua` | The per-directory session: save, restore, cursor. |
 | `newfile_spec.lua` | `:New` and the parent directories on write. |
 | `oneshot_spec.lua` | The shared session engine, including two running at once. |
@@ -57,6 +58,8 @@ hook or in CI.
 | `flow_job_spec.lua` | Flow's headless Claude engine: the command, the stream, the failures. |
 | `flow_planner_spec.lua` | The persistent planning TUI, Stop-hook result handoff, restart recovery, and replanning. |
 | `flow_implementation_spec.lua` | The persistent implementation TUI, worktree gates, review feedback, and verification. |
+| `flow_server_spec.lua` | The review server from Neovim's side: start, the ready line, a crash, the timeout, stop. |
+| `flow_health_spec.lua` | `:checkhealth flow`: the PATH checks, the state directory, the server report. |
 | `flow_ui_spec.lua` | The inline change preview and the stack panel. |
 | `flow_stack_spec.lua` | The change stack: decompose, look ahead, apply, undo, staleness. |
 

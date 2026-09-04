@@ -29,8 +29,8 @@ function M.script()
 end
 
 --- The one call that reaches the outside world. The tests replace it.
-function M.spawn(cmd, opts)
-  return vim.system(cmd, opts)
+function M.spawn(cmd, opts, on_exit)
+  return vim.system(cmd, opts, on_exit)
 end
 
 function M.is_running()
