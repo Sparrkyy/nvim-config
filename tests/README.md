@@ -1,6 +1,6 @@
 # Tests
 
-721 tests cover this configuration. None of them start Claude, open a network
+733 tests cover this configuration. None of them start Claude, open a network
 connection, or spend a token.
 
 ## Run them
@@ -55,7 +55,8 @@ hook or in CI.
 | `config_spec.lua` | The plugin settings, so a preference cannot regress unseen. |
 | `flow_store_spec.lua` | Flow on disk: plans, revisions, comments, steps, diffs, the undo journal. |
 | `flow_job_spec.lua` | Flow's headless Claude engine: the command, the stream, the failures. |
-| `flow_planner_spec.lua` | Writing the design document, and revising it from your comments. |
+| `flow_planner_spec.lua` | The persistent planning TUI, Stop-hook result handoff, restart recovery, and replanning. |
+| `flow_implementation_spec.lua` | The persistent implementation TUI, worktree gates, review feedback, and verification. |
 | `flow_ui_spec.lua` | The inline change preview and the stack panel. |
 | `flow_stack_spec.lua` | The change stack: decompose, look ahead, apply, undo, staleness. |
 

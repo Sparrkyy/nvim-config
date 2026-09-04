@@ -194,18 +194,20 @@ tell which of several sessions changed what.
 Each session inherits the model configured for the Claude CLI. A fix can read,
 search, edit, and run Bash commands so it can diagnose and verify the change.
 
-Press `<leader>al` to open the Telescope agent manager. It includes Flow
-planning, AI diff reviews, one-shot work, diagnostic fixes, Flow
-implementations, and Claude terminal buffers opened in Neovim. Running agents
-stay at the top. Moving through the list updates a large live preview. Terminal
-agents show their terminal screen; background agents show their input, tool
-activity, streamed output, directory, and elapsed time. Finished and failed
+Press `<leader>al` to open the Telescope agent manager. Every row is a real
+Claude terminal: Flow plans, Flow implementations, ad hoc sessions, and saved
+conversations all open as TUIs in the preview. Running machine-only jobs such
+as structured diff analysis stay in the lightweight progress HUD instead of
+putting a transcript-shaped imitation in the manager. Finished and failed
 scratch work stays available for one hour, then archives itself. Pinned work
 does not expire.
 
-Every preview follows the newest output instead of opening at line one.
-Background-agent previews reduce the internal request to one line, keep only
-recent activity, and give Claude's latest response the main reading area.
+Flow records are always persistent, pinned Claude TUIs. When an older headless
+Flow record is discovered, the manager upgrades it automatically and resumes
+its saved Claude conversation inside tmux when you select it.
+
+Every preview follows the newest terminal output instead of opening at line
+one.
 
 Press `<leader>ai` to create a new interactive Claude Code session without
 opening a terminal split. The session starts inside the private tmux server and
@@ -322,8 +324,12 @@ snapshot. Cached maps are reused only when the base and every changed file still
 match. Set `vim.g.flow_review_ai = false` to keep the deterministic core, tests,
 and supporting-file order without starting an AI job.
 
-1. A background Claude session runs in plan mode and writes a design document.
-   Open `<leader>al` while it runs to inspect its request or send guidance.
+1. A persistent Claude Code terminal runs in plan mode and writes a design
+   document. Flow opens it inside the agent manager, where the right side is
+   Claude Code's real TUI. The terminal runs in the private tmux server, so it
+   keeps working when Neovim closes. Its Stop hook stores the finished document
+   for Flow; Neovim imports that result immediately or when it next opens.
+   Open `<leader>al` while it runs to send guidance or enter the TUI.
    The plan names the new tests, the existing hot-path tests, and the exact
    targeted verification commands. It does not require a full suite unless the
    targeted tests cannot prove the change.
@@ -486,6 +492,12 @@ into `lua/ghostty/palette.lua`. `:Reload` picks up a colour edit at once.
 
 `<leader>gs` stage hunk, `<leader>gr` reset hunk, `<leader>gp` preview hunk,
 `<leader>gb` blame line, `<leader>gv` diff view, `[c` / `]c` move between hunks.
+
+`<leader>gg` opens the small branch picker. It sorts local and remote branches
+by the latest commit, with the most recently changed branch first. The legend
+in the picker shows the keys: `<Enter>` switches branches, `f` fetches and
+prunes every remote, `n` creates a branch from the current branch, and `q`
+closes the picker. `:GitBranches` opens the same picker.
 
 ## Files
 

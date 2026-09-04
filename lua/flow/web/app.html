@@ -92,7 +92,7 @@ main { display: grid; grid-template-columns: 1fr var(--gutter); gap: 2rem;
   animation-delay: calc(var(--motion-index, 0) * 42ms); }
 #doc pre.diagram-motion svg .node, #doc pre.diagram-motion svg .cluster,
 #doc pre.diagram-motion svg .edgeLabel, #doc pre.diagram-motion svg .messageText,
-#doc pre.diagram-motion svg .labelText { transform-box: fill-box; transform-origin: center;
+#doc pre.diagram-motion svg .labelText {
   animation: diagram-node-in .42s cubic-bezier(.2,.8,.2,1) both;
   animation-delay: calc(var(--motion-index, 0) * 90ms); }
 #doc pre.diagram-motion svg .edgePath path, #doc pre.diagram-motion svg .flowchart-link,
@@ -112,14 +112,14 @@ main { display: grid; grid-template-columns: 1fr var(--gutter); gap: 2rem;
   to { opacity: 1; transform: translateX(0); }
 }
 @keyframes diagram-node-in {
-  from { opacity: 0; transform: scale(.82); }
-  to { opacity: 1; transform: scale(1); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 @keyframes diagram-path-in { to { stroke-dashoffset: 0; } }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   #doc .plan-block-motion, #doc pre.code-motion .code-line,
-  #doc pre.diagram-motion svg * { animation: none !important; transform: none !important; }
+  #doc pre.diagram-motion svg * { animation: none !important; }
   #doc pre.diagram-motion svg .edgePath path, #doc pre.diagram-motion svg .flowchart-link,
   #doc pre.diagram-motion svg .messageLine0, #doc pre.diagram-motion svg .messageLine1,
   #doc pre.diagram-motion svg .loopLine { stroke-dasharray: none !important; stroke-dashoffset: 0 !important; }

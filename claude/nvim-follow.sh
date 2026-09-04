@@ -201,6 +201,21 @@ case "$event" in
     ;;
 
   Stop)
+    if [ -n "${CLAUDE_NVIM_FLOW_PLAN_ID:-}" ]; then
+      message=$(printf '%s' "$payload" | jq -c --arg p "$CLAUDE_NVIM_FLOW_PLAN_ID" '{
+        plan_id: $p,
+        cwd: (.cwd // ""),
+        session_id: (.session_id // ""),
+        summary: (.last_assistant_message // .message // "")
+      }')
+      if [ -n "${CLAUDE_NVIM_FLOW_PLAN_RESULT:-}" ]; then
+        printf '%s' "$message" > "$CLAUDE_NVIM_FLOW_PLAN_RESULT"
+      fi
+      encoded=$(printf '%s' "$message" | base64 | tr -d '\n')
+      ask "v:lua.require'flow.planner'.stop('${encoded}')" >/dev/null || true
+      exit 0
+    fi
+
     if [ -n "${CLAUDE_NVIM_FLOW_ID:-}" ]; then
       message=$(printf '%s' "$payload" | jq -c --arg p "$CLAUDE_NVIM_FLOW_ID" '{
         plan_id: $p,

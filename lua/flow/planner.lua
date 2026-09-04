@@ -1,8 +1,8 @@
 -- Stage one and stage two: write the design doc, then revise it.
 --
--- Both run the same background job. The difference is the prompt. A first
--- plan gets your context. A revision gets the current document plus every
--- comment you left on it in the browser.
+-- Both run in one persistent Claude Code terminal. A first plan gets your
+-- context. A revision sends the current document and browser comments back to
+-- the same conversation.
 --
 -- When a revision lands, this fires the `FlowPlanReady` User autocmd with the
 -- plan id in `data`. flow.init listens and opens the browser. Nothing here
@@ -12,10 +12,11 @@ local M = {}
 
 local job = require("flow.job")
 local store = require("flow.store")
+local sessions = require("claude.sessions")
 
 M.opts = {
-  tools = "Read,Grep,Glob",
-  max_turns = 40,
+  command = "claude",
+  tools = "Read,Grep,Glob,AskUserQuestion",
 }
 
 --- The output contract ------------------------------------------------------
@@ -103,6 +104,120 @@ local function fire(event, plan_id)
   })
 end
 
+function M.session_key(plan_id)
+  return "flow-plan-" .. tostring(plan_id)
+end
+
+function M.result_path(plan_id, cwd)
+  return store.plan_dir(plan_id, cwd) .. "/terminal-result.json"
+end
+
+function M.command(meta, prompt, resume)
+  local title = "Flow plan: " .. tostring(meta.title or "Planning")
+  local cmd = {
+    M.opts.command,
+    "--permission-mode", "plan",
+    "--name", title,
+    "--tools", M.opts.tools,
+    "--ide",
+  }
+  if resume then
+    vim.list_extend(cmd, { "--resume", meta.planning_session_id })
+  else
+    vim.list_extend(cmd, {
+      "--session-id", meta.planning_session_id,
+      "--append-system-prompt", M.DOC_CONTRACT,
+    })
+  end
+  table.insert(cmd, prompt)
+  return cmd
+end
+
+function M.launch(spec)
+  return sessions.new_terminal_session(spec)
+end
+
+function M.find_session(key)
+  return sessions.find_by_key(key)
+end
+
+function M.send_session(id, prompt)
+  return sessions.send(id, prompt)
+end
+
+function M.show_session(id)
+  return sessions.show_manager({ selected_id = id })
+end
+
+local function clear_result(plan_id, cwd)
+  pcall(vim.fn.delete, M.result_path(plan_id, cwd))
+end
+
+local function start_terminal(plan_id, prompt, opts)
+  opts = opts or {}
+  local meta = store.meta(plan_id, opts.cwd)
+  if not meta then
+    return nil, "Flow could not read the plan."
+  end
+  local cwd = opts.cwd or meta.cwd
+  local key = M.session_key(plan_id)
+  local session_id = meta.planning_session_id
+  local resume = session_id ~= nil and session_id ~= vim.NIL and session_id ~= ""
+  if not resume then
+    session_id = sessions.uuid(key)
+  end
+  meta = store.set_meta(plan_id, {
+    status = "planning",
+    planning_session_id = session_id,
+    planning_session_key = key,
+    pending_prompt = prompt,
+    pending_addressed_comments = opts.addressed or {},
+    error = vim.NIL,
+  }, cwd)
+  if not meta then
+    return nil, "Flow could not save the planning session."
+  end
+
+  clear_result(plan_id, cwd)
+  require("claude.follow").register(cwd)
+
+  local existing = M.find_session(key)
+  if existing then
+    if not M.send_session(existing.id, prompt) then
+      return nil, "Claude Code did not accept the planning prompt."
+    end
+    M.show_session(existing.id)
+    return existing.id
+  end
+
+  local title = opts.title or "Flow plan: " .. tostring(meta.title or "Planning")
+  local resume_args = {
+    "--permission-mode", "plan",
+    "--tools", M.opts.tools,
+  }
+  local id = M.launch({
+    key = key,
+    title = title,
+    kind = "Flow plan",
+    prompt = prompt,
+    cwd = cwd,
+    session_id = session_id,
+    cmd = M.command(meta, prompt, resume),
+    resume_args = resume_args,
+    persistent = true,
+    pinned = true,
+    env_overrides = {
+      CLAUDE_NVIM_FLOW_PLAN_ID = plan_id,
+      CLAUDE_NVIM_FLOW_PLAN_RESULT = M.result_path(plan_id, cwd),
+    },
+  })
+  if not id then
+    return nil, "Claude Code did not start."
+  end
+  store.set_meta(plan_id, { planning_registry_id = id }, cwd)
+  return id
+end
+
 --- Stage one ----------------------------------------------------------------
 
 --- The prompt for a first plan.
@@ -137,19 +252,13 @@ function M.start(context, opts)
     return nil
   end
 
-  job.run({
-    prompt = prompt,
-    title = "Plan: " .. vim.trim(context):sub(1, 48),
-    kind = "Flow plan",
+  local _, err = start_terminal(plan_id, prompt, {
     cwd = cwd,
-    tools = M.opts.tools,
-    permission_mode = "plan",
-    max_turns = M.opts.max_turns,
-    append_system_prompt = M.DOC_CONTRACT,
-    on_done = function(ok, text, info)
-      M.receive(plan_id, ok, text, info, { prompt = prompt, cwd = cwd })
-    end,
+    title = "Plan: " .. vim.trim(context):sub(1, 48),
   })
+  if err then
+    M.receive(plan_id, false, nil, { detail = err }, { prompt = prompt, cwd = cwd })
+  end
 
   return plan_id
 end
@@ -210,20 +319,15 @@ function M.replan(plan_id, opts)
   local prompt = M.replan_prompt(revision.plan_md, comments)
   local cwd = opts.cwd or meta.cwd
 
-  store.set_meta(plan_id, { status = "planning" }, cwd)
-  job.run({
-    prompt = prompt,
-    title = string.format("Replan: %s (%d comments)", meta.title, #comments),
-    kind = "Flow plan",
+  local _, err = start_terminal(plan_id, prompt, {
     cwd = cwd,
-    tools = M.opts.tools,
-    permission_mode = "plan",
-    max_turns = M.opts.max_turns,
-    append_system_prompt = M.DOC_CONTRACT,
-    on_done = function(ok, text, info)
-      M.receive(plan_id, ok, text, info, { prompt = prompt, cwd = cwd, addressed = ids })
-    end,
+    title = string.format("Replan: %s (%d comments)", meta.title, #comments),
+    addressed = ids,
   })
+  if err then
+    M.receive(plan_id, false, nil, { detail = err }, { prompt = prompt, cwd = cwd, addressed = ids })
+    return false
+  end
   return true
 end
 
@@ -234,16 +338,26 @@ function M.receive(plan_id, ok, text, info, ctx)
   ctx = ctx or {}
   info = info or {}
   if not ok then
-    store.set_meta(plan_id, { status = "review", error = tostring(info.detail or "the job failed") }, ctx.cwd)
+    store.set_meta(plan_id, {
+      status = "review",
+      error = tostring(info.detail or "the terminal session failed"),
+      pending_prompt = vim.NIL,
+      pending_addressed_comments = vim.NIL,
+    }, ctx.cwd)
     fire("FlowPlanFailed", plan_id)
-    return
+    return false
   end
 
   local markdown = job.decode_markdown(text)
   if vim.trim(markdown) == "" then
-    store.set_meta(plan_id, { status = "review", error = "the job returned an empty document" }, ctx.cwd)
+    store.set_meta(plan_id, {
+      status = "review",
+      error = "the terminal session returned an empty document",
+      pending_prompt = vim.NIL,
+      pending_addressed_comments = vim.NIL,
+    }, ctx.cwd)
     fire("FlowPlanFailed", plan_id)
-    return
+    return false
   end
 
   local n = store.add_revision(plan_id, {
@@ -255,7 +369,7 @@ function M.receive(plan_id, ok, text, info, ctx)
   }, ctx.cwd)
   if not n then
     fire("FlowPlanFailed", plan_id)
-    return
+    return false
   end
 
   if ctx.addressed and #ctx.addressed > 0 then
@@ -265,9 +379,67 @@ function M.receive(plan_id, ok, text, info, ctx)
     title = M.title_of(markdown),
     status = "review",
     error = vim.NIL,
+    planning_session_id = info.session_id,
+    pending_prompt = vim.NIL,
+    pending_addressed_comments = vim.NIL,
   }, ctx.cwd)
 
+  local record = M.find_session(M.session_key(plan_id))
+  if record then
+    sessions.rename(record.id, "Flow plan: " .. M.title_of(markdown))
+  end
+
   fire("FlowPlanReady", plan_id)
+  return true
+end
+
+local function finish_terminal_result(plan_id, data, cwd)
+  local meta = store.meta(plan_id, cwd)
+  if not meta or meta.status ~= "planning" then
+    return "ignore"
+  end
+  if data.cwd and data.cwd ~= "" and vim.fn.resolve(data.cwd) ~= vim.fn.resolve(meta.cwd) then
+    return "ignore"
+  end
+  local session_id = data.session_id
+  if session_id == nil or session_id == "" then
+    session_id = meta.planning_session_id
+  end
+  local ok = M.receive(plan_id, true, data.summary, {
+    session_id = session_id,
+  }, {
+    cwd = meta.cwd,
+    prompt = meta.pending_prompt,
+    addressed = type(meta.pending_addressed_comments) == "table" and meta.pending_addressed_comments or {},
+  })
+  clear_result(plan_id, meta.cwd)
+  return ok and "ready" or "failed"
+end
+
+function M.stop(encoded)
+  local ok, result = pcall(function()
+    local data = vim.json.decode(vim.base64.decode(encoded))
+    if type(data) ~= "table" or type(data.plan_id) ~= "string" then
+      return "ignore"
+    end
+    return finish_terminal_result(data.plan_id, data)
+  end)
+  return ok and result or "failed"
+end
+
+function M.recover(cwd)
+  local recovered = 0
+  for _, meta in ipairs(store.plans(cwd or vim.fn.getcwd())) do
+    if meta.status == "planning" then
+      local data = store.read_json(M.result_path(meta.id, meta.cwd))
+      if type(data) == "table" and type(data.summary) == "string" and vim.trim(data.summary) ~= "" then
+        if finish_terminal_result(meta.id, data, meta.cwd) == "ready" then
+          recovered = recovered + 1
+        end
+      end
+    end
+  end
+  return recovered
 end
 
 return M

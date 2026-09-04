@@ -1,14 +1,15 @@
 local H = require("helpers")
 
 describe("flow.implementation", function()
-  local implementation, store, worktree, cwd, workdir, plan_id, sent, spawned, manager_opened
+  local implementation, store, worktree, cwd, workdir, plan_id, sent, spawned, manager_opened, native_spawn
 
   before_each(function()
     H.reset_buffers()
-    require("claude.sessions").reset()
+    H.reload("claude.sessions").reset()
     store = H.reload("flow.store")
     worktree = H.reload("flow.worktree")
     implementation = H.reload("flow.implementation")
+    native_spawn = implementation.spawn_terminal
     require("claude.sessions").show_manager = function(opts)
       manager_opened = opts
       return true
@@ -62,6 +63,43 @@ describe("flow.implementation", function()
     assert.equals("/goal go implement this plan " .. url, implementation.prompt(url))
   end)
 
+  it("routes the implementation TUI through the persistent session manager", function()
+    local registry = require("claude.sessions")
+    local seen
+    registry.new_terminal_session = function(spec)
+      seen = spec
+      return registry.start({
+        key = spec.key,
+        title = spec.title,
+        kind = spec.kind,
+        cwd = spec.cwd,
+        session_id = spec.session_id,
+        buf = vim.api.nvim_create_buf(false, true),
+        channel = 42,
+        persistent = spec.persistent,
+        pinned = spec.pinned,
+        env_overrides = spec.env_overrides,
+      })
+    end
+
+    local terminal = native_spawn({ "claude", "go" }, {
+      key = "flow-implementation-1",
+      title = "Flow: Add feature",
+      prompt = "go",
+      cwd = workdir,
+      session_id = "session-1",
+      plan_id = plan_id,
+      resume_args = { "--permission-mode", "auto" },
+      env_overrides = { CLAUDE_NVIM_FLOW_ID = plan_id },
+    })
+
+    assert.is_truthy(terminal.registry_id)
+    assert.is_true(seen.persistent)
+    assert.is_true(seen.pinned)
+    assert.equals("Flow implementation", seen.kind)
+    assert.equals(plan_id, seen.env_overrides.CLAUDE_NVIM_FLOW_ID)
+  end)
+
   it("starts a persistent session in the owned worktree", function()
     H.capture_notify(function()
       assert.is_true(implementation.begin(plan_id))
@@ -75,10 +113,14 @@ describe("flow.implementation", function()
       "/goal go implement this plan http://127.0.0.1:4321/plan/" .. plan_id .. "?token=abc123",
       spawned[#spawned]
     )
+    assert.is_true(vim.tbl_contains(spawned, "--ide"))
     local sessions = require("claude.sessions").list()
     assert.equals(1, #sessions)
     assert.equals("Flow implementation", sessions[1].kind)
     assert.equals(meta.session_id, sessions[1].session_id)
+    assert.is_true(sessions[1].persistent)
+    assert.is_true(sessions[1].pinned)
+    assert.equals(plan_id, sessions[1].env_overrides.CLAUDE_NVIM_FLOW_ID)
     assert.equals(sessions[1].id, manager_opened.selected_id)
     assert.equals(-1, vim.fn.bufwinid(implementation.sessions[plan_id].buf))
   end)

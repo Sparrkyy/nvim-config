@@ -59,15 +59,15 @@ describe("reload", function()
     assert.is_table(package.loaded["config.reload"])
   end)
 
-  it("keeps the Claude session registry and its active entries", function()
+  it("reloads the Claude session registry code without losing active entries", function()
     local sessions = require("claude.sessions")
     sessions.reset()
     sessions.opts.state_path = H.tmpdir() .. "/claude-sessions.json"
     local id = sessions.start({ title = "Still running" })
     reload.reload()
-    assert.equals(sessions, require("claude.sessions"))
+    assert.is_not.equal(sessions, require("claude.sessions"))
     assert.equals("Still running", require("claude.sessions").get(id).title)
-    sessions.reset()
+    require("claude.sessions").reset()
   end)
 
   it("keeps the tmux backend used by the live session registry", function()
@@ -99,6 +99,29 @@ describe("reload", function()
   it("re-registers the update check, so :ConfigUpdate survives a reload", function()
     reload.reload()
     assert.is_truthy(vim.api.nvim_get_commands({})["ConfigUpdate"])
+  end)
+
+  it("re-registers the Git picker, so :GitBranches survives a reload", function()
+    reload.reload()
+    assert.is_truthy(vim.api.nvim_get_commands({})["GitBranches"])
+  end)
+
+  it("closes the Git picker before its module disappears", function()
+    local git_ui = require("config.git_ui")
+    git_ui.git = function(args, done)
+      if args[1] == "rev-parse" then
+        done(true, "/work/repo")
+      else
+        done(true, "refs/heads/main\tmain\t*\t100\t")
+      end
+    end
+    git_ui.open()
+    assert.is_true(git_ui.is_open())
+
+    reload.reload()
+
+    assert.is_false(git_ui.is_open())
+    assert.is_false(require("config.git_ui").is_open())
   end)
 
   it("re-registers follow mode with the hook", function()

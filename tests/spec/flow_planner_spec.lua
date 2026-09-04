@@ -3,17 +3,50 @@
 local H = require("helpers")
 
 describe("flow.planner", function()
-  local planner, store, job, cwd
+  local planner, store, sessions, cwd
 
   before_each(function()
     store = H.reload("flow.store")
-    job = H.reload("flow.job")
+    sessions = H.reload("claude.sessions")
+    sessions.reset()
     planner = H.reload("flow.planner")
     H.flow_root(store)
     cwd = H.tmpdir()
   end)
 
+  after_each(function()
+    sessions.reset()
+    H.reset_buffers()
+  end)
+
   local DOC = "# Add a verbose flag\n\n## Context\nThe CLI is quiet.\n"
+
+  local function stub_terminal(output, opts)
+    opts = opts or {}
+    local stub = { specs = {} }
+    planner.find_session = function()
+      return nil
+    end
+    planner.show_session = function()
+      return true
+    end
+    planner.launch = function(spec)
+      table.insert(stub.specs, spec)
+      if opts.fail then
+        return nil
+      end
+      if not opts.defer then
+        planner.stop(H.encode({
+          plan_id = spec.env_overrides.CLAUDE_NVIM_FLOW_PLAN_ID,
+          cwd = spec.cwd,
+          session_id = spec.session_id,
+          summary = output,
+        }))
+      end
+      return #stub.specs
+    end
+    return stub
+  end
 
   --- Prompts ---------------------------------------------------------------
 
@@ -23,7 +56,7 @@ describe("flow.planner", function()
     assert.is_truthy(prompt:match("<request>"))
   end)
 
-  it("tells the first job not to change a file", function()
+  it("tells the planning terminal not to change a file", function()
     assert.is_truthy(planner.first_prompt("x"):match("Do not change any file"))
   end)
 
@@ -81,7 +114,7 @@ describe("flow.planner", function()
   end)
 
   it("stores the finished document as revision one", function()
-    H.stub_flow_job(job, DOC)
+    stub_terminal(DOC)
     local id = planner.start("make it louder", { cwd = cwd })
     -- The stored document is trimmed, because a model often adds a blank line.
     assert.equals(vim.trim(DOC), store.revision(id, nil, cwd).plan_md)
@@ -89,30 +122,60 @@ describe("flow.planner", function()
   end)
 
   it("names the plan after the document", function()
-    H.stub_flow_job(job, DOC)
+    stub_terminal(DOC)
     local id = planner.start("make it louder", { cwd = cwd })
     assert.equals("Add a verbose flag", store.meta(id, cwd).title)
     assert.equals("review", store.meta(id, cwd).status)
   end)
 
-  it("runs the plan job in plan mode, with no write tool", function()
-    local stub = H.stub_flow_job(job, DOC)
+  it("runs the plan in a persistent raw terminal with no write tool", function()
+    local stub = stub_terminal(DOC)
     planner.start("x", { cwd = cwd })
     local spec = stub.specs[1]
-    assert.equals("plan", spec.permission_mode)
-    assert.is_falsy(spec.tools:match("Write"))
-    assert.is_falsy(spec.tools:match("Edit"))
+    assert.equals("Flow plan", spec.kind)
+    assert.is_true(spec.persistent)
+    assert.is_true(spec.pinned)
+    assert.is_truthy(spec.cmd)
+    assert.is_false(vim.tbl_contains(spec.cmd, "-p"))
+    assert.equals("plan", spec.cmd[3])
+    assert.is_truthy(planner.opts.tools:match("AskUserQuestion"))
+    assert.is_falsy(planner.opts.tools:match("Write"))
+    assert.is_falsy(planner.opts.tools:match("Edit"))
   end)
 
-  it("keeps the session id and the cost", function()
-    H.stub_flow_job(job, DOC)
+  it("keeps the terminal session id", function()
+    local stub = stub_terminal(DOC)
     local id = planner.start("x", { cwd = cwd })
-    assert.equals("test-session", store.revision(id, nil, cwd).session_id)
-    assert.equals(0.01, store.revision(id, nil, cwd).cost)
+    assert.equals(stub.specs[1].session_id, store.revision(id, nil, cwd).session_id)
+  end)
+
+  it("gives the terminal hook a durable result handoff", function()
+    local stub = stub_terminal(DOC, { defer = true })
+    local id = planner.start("x", { cwd = cwd })
+    local spec = stub.specs[1]
+    assert.equals(id, spec.env_overrides.CLAUDE_NVIM_FLOW_PLAN_ID)
+    assert.equals(planner.result_path(id, cwd), spec.env_overrides.CLAUDE_NVIM_FLOW_PLAN_RESULT)
+    assert.equals("planning", store.meta(id, cwd).status)
+  end)
+
+  it("recovers a plan that finished while Neovim was closed", function()
+    stub_terminal(DOC, { defer = true })
+    local id = planner.start("x", { cwd = cwd })
+    local meta = store.meta(id, cwd)
+    store.write_json(planner.result_path(id, cwd), {
+      plan_id = id,
+      cwd = cwd,
+      session_id = meta.planning_session_id,
+      summary = DOC,
+    })
+
+    assert.equals(1, planner.recover(cwd))
+    assert.equals(vim.trim(DOC), store.revision(id, nil, cwd).plan_md)
+    assert.equals(0, vim.fn.filereadable(planner.result_path(id, cwd)))
   end)
 
   it("unwraps a document the model put in a fence", function()
-    H.stub_flow_job(job, "```markdown\n" .. DOC .. "\n```")
+    stub_terminal("```markdown\n" .. DOC .. "\n```")
     local id = planner.start("x", { cwd = cwd })
     assert.is_truthy(store.revision(id, nil, cwd).plan_md:match("^# Add a verbose flag"))
   end)
@@ -126,23 +189,21 @@ describe("flow.planner", function()
         table.insert(seen, ev.data.plan_id)
       end,
     })
-    H.stub_flow_job(job, DOC)
+    stub_terminal(DOC)
     local id = planner.start("x", { cwd = cwd })
     assert.same({ id }, seen)
   end)
 
-  it("records the reason when the job fails, and writes no revision", function()
-    job.run = function(spec)
-      spec.on_done(false, nil, { detail = "claude exploded" })
-    end
+  it("records the reason when the terminal fails, and writes no revision", function()
+    stub_terminal(nil, { fail = true })
     local id = planner.start("x", { cwd = cwd })
     assert.equals(0, store.meta(id, cwd).current_revision)
-    assert.equals("claude exploded", store.meta(id, cwd).error)
+    assert.equals("Claude Code did not start.", store.meta(id, cwd).error)
     assert.equals("review", store.meta(id, cwd).status)
   end)
 
   it("treats an empty document as a failure", function()
-    H.stub_flow_job(job, "   ")
+    stub_terminal("   ")
     local id = planner.start("x", { cwd = cwd })
     assert.equals(0, store.meta(id, cwd).current_revision)
   end)
@@ -167,7 +228,7 @@ describe("flow.planner", function()
   end)
 
   it("will not replan without a comment", function()
-    H.stub_flow_job(job, DOC)
+    stub_terminal(DOC)
     local id = planner.start("x", { cwd = cwd })
     local seen = H.capture_notify(function()
       assert.is_false(planner.replan(id, { cwd = cwd }))
@@ -181,22 +242,49 @@ describe("flow.planner", function()
   end)
 
   it("writes the answer as the next revision", function()
-    H.stub_flow_job(job, DOC)
+    stub_terminal(DOC)
     local id = planner.start("x", { cwd = cwd })
     store.add_comment(id, { body = "use a table" }, cwd)
 
-    H.stub_flow_job(job, "# Add a verbose flag\n\n## Context\nRewritten.\n")
+    stub_terminal("# Add a verbose flag\n\n## Context\nRewritten.\n")
     assert.is_true(planner.replan(id, { cwd = cwd }))
     assert.equals(2, store.meta(id, cwd).current_revision)
     assert.is_truthy(store.revision(id, nil, cwd).plan_md:match("Rewritten"))
   end)
 
+  it("sends replanning comments to the existing terminal", function()
+    stub_terminal(DOC)
+    local id = planner.start("x", { cwd = cwd })
+    store.add_comment(id, { body = "use a table" }, cwd)
+    local sent
+    local shown
+    planner.find_session = function()
+      return { id = 77 }
+    end
+    planner.send_session = function(session_id, prompt)
+      sent = { session_id, prompt }
+      return true
+    end
+    planner.show_session = function(session_id)
+      shown = session_id
+      return true
+    end
+    planner.launch = function()
+      error("replanning should reuse the live terminal")
+    end
+
+    assert.is_true(planner.replan(id, { cwd = cwd }))
+    assert.equals(77, sent[1])
+    assert.is_truthy(sent[2]:match("use a table"))
+    assert.equals(77, shown)
+  end)
+
   it("stamps the comments the new revision answered", function()
-    H.stub_flow_job(job, DOC)
+    stub_terminal(DOC)
     local id = planner.start("x", { cwd = cwd })
     local cid = store.add_comment(id, { body = "use a table" }, cwd)
 
-    H.stub_flow_job(job, DOC)
+    stub_terminal(DOC)
     planner.replan(id, { cwd = cwd })
 
     assert.equals(0, #store.open_comments(id, cwd))
@@ -205,10 +293,10 @@ describe("flow.planner", function()
   end)
 
   it("leaves a comment made after the replan open", function()
-    H.stub_flow_job(job, DOC)
+    stub_terminal(DOC)
     local id = planner.start("x", { cwd = cwd })
     store.add_comment(id, { body = "first" }, cwd)
-    H.stub_flow_job(job, DOC)
+    stub_terminal(DOC)
     planner.replan(id, { cwd = cwd })
 
     store.add_comment(id, { body = "second" }, cwd)

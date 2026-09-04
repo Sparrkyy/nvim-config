@@ -94,10 +94,15 @@ local persisted_fields = {
   "pinned",
   "tmux_name",
   "auto_title",
+  "env_overrides",
 }
 
 local function persistent_record(record)
   return record.persistent == true or record.pinned == true
+end
+
+local function flow_record(record)
+  return type(record.kind) == "string" and record.kind:match("^Flow ") ~= nil
 end
 
 local function serializable_record(record)
@@ -367,7 +372,13 @@ function M.manager_records()
   M.reap()
   local ordered = {}
   for index = #records, 1, -1 do
-    table.insert(ordered, records[index])
+    local record = records[index]
+    local terminal = record.channel and record.buf and vim.api.nvim_buf_is_valid(record.buf)
+    local persistent_tui = persistent_record(record) and present(record.tmux_name)
+    local resumable_tui = record.status ~= "running" and present(record.session_id)
+    if terminal or persistent_tui or resumable_tui then
+      table.insert(ordered, record)
+    end
   end
   table.sort(ordered, function(left, right)
     local left_running = left.status == "running"
@@ -512,7 +523,19 @@ local function tmux_metadata(record)
     started = record.started,
     pinned = record.pinned == true,
     auto_title = record.auto_title == true,
+    env_overrides = record.env_overrides,
   }
+end
+
+local function terminal_environment(record, overrides)
+  local env = managed_terminal_environment()
+  for key, value in pairs(record.env_overrides or {}) do
+    env[key] = value
+  end
+  for key, value in pairs(overrides or {}) do
+    env[key] = value
+  end
+  return env
 end
 
 local function bind_terminal(record, terminal)
@@ -558,7 +581,7 @@ end
 
 function M.launch_terminal(record, claude_cmd, opts)
   opts = opts or {}
-  local env = opts.env or managed_terminal_environment()
+  local env = terminal_environment(record, opts.env)
   local launch_cmd = claude_cmd
   local used_tmux = record.persistent and M.tmux.available()
   local existing = false
@@ -618,10 +641,13 @@ function M.attach(id)
   return M.launch_terminal(record, nil) ~= nil
 end
 
-local function resume(record, prompt)
+local function resume(record, prompt, opts)
+  opts = opts or {}
   if not present(record.session_id) then
-    return M.show_manager({ selected_id = record.id })
+    return opts.show_manager == false or M.show_manager({ selected_id = record.id })
   end
+  record.persistent = true
+  record.tmux_name = record.tmux_name or M.tmux.name(record.key)
   local cmd = { M.opts.command, "--resume", record.session_id, "--name", record.title, "--ide" }
   vim.list_extend(cmd, record.resume_args or {})
   if present(prompt) then
@@ -638,11 +664,31 @@ local function resume(record, prompt)
   end
   M.save_state()
   M.render()
-  M.show_manager({ selected_id = record.id })
+  if opts.show_manager ~= false then
+    M.show_manager({ selected_id = record.id })
+  end
   return true
 end
 
+function M.ensure_tui(id)
+  local record = by_id[id]
+  if not record then
+    return false
+  end
+  if record.channel and record.buf and vim.api.nvim_buf_is_valid(record.buf) then
+    return true
+  end
+  if record.status == "running" and present(record.tmux_name) and M.tmux.has(record.tmux_name) then
+    return M.attach(id)
+  end
+  if record.status == "running" or not present(record.session_id) then
+    return false
+  end
+  return resume(record, nil, { show_manager = false })
+end
+
 function M.open(id)
+  M.upgrade_legacy_flow_records()
   local record = by_id[id]
   if not record then
     return false
@@ -750,6 +796,7 @@ function M.start(spec)
     tmux_name = spec.tmux_name,
     auto_title = spec.auto_title == true,
     ide_reconnect = spec.ide_reconnect == true,
+    env_overrides = spec.env_overrides or {},
   }
   table.insert(records, record)
   by_id[record.id] = record
@@ -827,14 +874,16 @@ function M.new_terminal_session(spec)
   local id = M.start({
     key = key,
     title = title,
-    kind = "terminal",
+    kind = spec.kind or "terminal",
+    prompt = spec.prompt,
     cwd = cwd,
     session_id = session_id,
-    resume_args = { "--permission-mode", permission_mode },
+    resume_args = spec.resume_args or { "--permission-mode", permission_mode },
     persistent = spec.persistent ~= false,
     pinned = spec.pinned == true,
     tmux_name = spec.tmux_name or M.tmux.name(key),
     auto_title = spec.title == nil,
+    env_overrides = spec.env_overrides or {},
   })
   local cmd = spec.cmd or { M.opts.command }
   if not spec.cmd and session_id then
@@ -846,7 +895,7 @@ function M.new_terminal_session(spec)
   end
   local record = by_id[id]
   local terminal = M.launch_terminal(record, cmd, {
-    env = spec.env or managed_terminal_environment(),
+    env = spec.env,
   })
   if not terminal then
     remove(id)
@@ -1080,6 +1129,18 @@ function M.get(id)
   return by_id[id]
 end
 
+function M.find_by_key(key)
+  if not present(key) then
+    return nil
+  end
+  for index = #records, 1, -1 do
+    if records[index].key == key then
+      return records[index]
+    end
+  end
+  return nil
+end
+
 function M.list()
   M.reap()
   return vim.deepcopy(records)
@@ -1140,6 +1201,7 @@ local function restore_record(saved)
   record.prompts = type(record.prompts) == "table" and record.prompts or {}
   record.activity = type(record.activity) == "table" and record.activity or {}
   record.resume_args = type(record.resume_args) == "table" and record.resume_args or {}
+  record.env_overrides = type(record.env_overrides) == "table" and record.env_overrides or {}
   record.persistent = true
   record.pinned = record.pinned == true
   record.status = record.status or "saved"
@@ -1235,11 +1297,41 @@ function M.reconcile_tmux()
   return changed
 end
 
+function M.upgrade_legacy_flow_records()
+  local changed = 0
+  for _, record in ipairs(records) do
+    if flow_record(record) and present(record.session_id) then
+      local upgraded = false
+      if not record.persistent then
+        record.persistent = true
+        upgraded = true
+      end
+      if not record.pinned then
+        record.pinned = true
+        upgraded = true
+      end
+      if not present(record.tmux_name) then
+        record.tmux_name = M.tmux.name(record.key)
+        upgraded = true
+      end
+      if upgraded then
+        changed = changed + 1
+      end
+    end
+  end
+  if changed > 0 then
+    M.save_state()
+    M.render()
+  end
+  return changed
+end
+
 function M.hydrate()
   if not hydrated then
     hydrated = true
     M.load_state()
   end
+  M.upgrade_legacy_flow_records()
   M.reconcile_tmux()
   M.reap()
 end
@@ -1277,6 +1369,7 @@ function M.register_terminal(spec)
       persistent = spec.persistent == true or record.persistent,
       pinned = spec.pinned == true or record.pinned,
       tmux_name = spec.tmux_name or record.tmux_name,
+      env_overrides = spec.env_overrides or record.env_overrides,
     })
     record.finished_at = nil
     by_buf[buf] = id
@@ -1315,9 +1408,13 @@ function M.open_telescope(opts)
     return false
   end
 
-  local _, running = M.count()
+  local visible_records = M.manager_records()
+  local running = 0
   local pinned = 0
-  for _, record in ipairs(records) do
+  for _, record in ipairs(visible_records) do
+    if record.status == "running" then
+      running = running + 1
+    end
     if record.pinned then
       pinned = pinned + 1
     end
@@ -1342,7 +1439,7 @@ function M.open_telescope(opts)
       running,
       pinned
     ),
-    preview_title = "Latest activity",
+    preview_title = "Claude TUI",
     finder = manager_finder(finders),
     sorter = sorters.new({
       scoring_function = function()
@@ -1353,11 +1450,12 @@ function M.open_telescope(opts)
       end,
     }),
     previewer = previewers.new_buffer_previewer({
-      title = "Latest activity",
+      title = "Claude TUI",
       define_preview = function(self, entry, status)
         local record = entry and entry.value
-        if record and record.status == "running" and not record.channel and present(record.tmux_name) then
-          M.attach(record.id)
+        if record then
+          M.ensure_tui(record.id)
+          record = by_id[record.id]
         end
         local buf = self.state.bufnr
         vim.bo[buf].filetype = record and record.channel and "claude-session" or "markdown"
@@ -1478,8 +1576,9 @@ function M.open_telescope(opts)
       local function focus_terminal()
         local id = selected_id()
         local record = id and by_id[id]
-        if record and not record.channel and present(record.tmux_name) then
-          M.attach(id)
+        if record then
+          M.ensure_tui(id)
+          record = by_id[id]
         end
         if not record or not record.buf or not vim.api.nvim_buf_is_valid(record.buf) then
           notify("The selected session has no live terminal.", vim.log.levels.WARN)
@@ -1613,6 +1712,57 @@ function M.setup()
       M.terminal_closed(event.buf, vim.v.event.status or 0)
     end,
   })
+end
+
+function M.release_for_reload()
+  M.upgrade_legacy_flow_records()
+  if manager_is_open() then
+    local ok, actions = pcall(require, "telescope.actions")
+    if ok then
+      pcall(actions.close, manager.prompt_bufnr)
+    end
+  end
+  manager = { picker = nil, prompt_bufnr = nil, preview_win = nil, refresh_pending = false }
+  stop_timer()
+  return {
+    records = records,
+    next_id = next_id,
+    opts = vim.deepcopy(M.opts),
+    tmux = M.tmux,
+  }
+end
+
+function M.restore_after_reload(snapshot)
+  if type(snapshot) ~= "table" or type(snapshot.records) ~= "table" then
+    return false
+  end
+  records = snapshot.records
+  by_id = {}
+  by_buf = {}
+  next_id = tonumber(snapshot.next_id) or 0
+  M.opts = vim.tbl_extend("force", M.opts, snapshot.opts or {})
+  M.tmux = snapshot.tmux or M.tmux
+  for _, record in ipairs(records) do
+    if record.id then
+      by_id[record.id] = record
+      next_id = math.max(next_id, tonumber(record.id) or 0)
+    end
+    if record.buf and vim.api.nvim_buf_is_valid(record.buf) then
+      by_buf[record.buf] = record.id
+      vim.b[record.buf].claude_session_registry_id = record.id
+    else
+      record.buf = nil
+      record.channel = nil
+    end
+  end
+  hydrated = true
+  restoring = false
+  M.upgrade_legacy_flow_records()
+  M.reconcile_tmux()
+  if #records > 0 then
+    ensure_timer()
+  end
+  return true
 end
 
 function M.reset()

@@ -90,6 +90,7 @@ function M.command(meta, prompt, resume)
     M.opts.permission_mode,
     "--name",
     "Flow: " .. tostring(meta.title or "implementation"),
+    "--ide",
   }
   if resume then
     vim.list_extend(cmd, { "--resume", meta.session_id })
@@ -103,35 +104,59 @@ function M.command(meta, prompt, resume)
 end
 
 function M.spawn_terminal(cmd, opts)
-  local buf = vim.api.nvim_create_buf(false, true)
-  local channel
-  vim.api.nvim_buf_call(buf, function()
-    channel = vim.fn.termopen(cmd, {
-      cwd = opts.cwd,
-      env = opts.env,
-      on_exit = function(_, code)
-        vim.schedule(function()
-          opts.on_exit(code)
-        end)
-      end,
-    })
-  end)
-  if channel <= 0 then
-    pcall(vim.api.nvim_buf_delete, buf, { force = true })
+  local id = session_registry.new_terminal_session({
+    key = opts.key,
+    title = opts.title,
+    kind = "Flow implementation",
+    prompt = opts.prompt,
+    cwd = opts.cwd,
+    session_id = opts.session_id,
+    cmd = cmd,
+    resume_args = opts.resume_args,
+    persistent = true,
+    pinned = true,
+    env_overrides = opts.env_overrides,
+  })
+  local record = id and session_registry.get(id)
+  if not record or not record.buf or not record.channel then
     return nil, "Claude Code did not start."
   end
-  vim.bo[buf].bufhidden = "hide"
-  vim.bo[buf].swapfile = false
-  vim.bo[buf].filetype = "flow-claude"
-  vim.b[buf].flow_plan_id = opts.plan_id
-  return { buf = buf, channel = channel }, nil
+  vim.b[record.buf].flow_plan_id = opts.plan_id
+  return { buf = record.buf, channel = record.channel, registry_id = id }, nil
 end
 
 function M.send_terminal(session, text)
-  if not session or not session.channel or session.channel <= 0 then
+  if not session then
+    return false
+  end
+  if session.registry_id then
+    return session_registry.send(session.registry_id, text)
+  end
+  if not session.channel or session.channel <= 0 then
     return false
   end
   return session_registry.send_channel(session.channel, text)
+end
+
+local function session_key(plan_id)
+  return "flow-implementation-" .. tostring(plan_id)
+end
+
+local function session_from_record(plan_id, record)
+  if not record or record.status ~= "running" then
+    return nil
+  end
+  if not record.channel and not session_registry.attach(record.id) then
+    return nil
+  end
+  record = session_registry.get(record.id)
+  if not record or not record.buf or not vim.api.nvim_buf_is_valid(record.buf) then
+    return nil
+  end
+  vim.b[record.buf].flow_plan_id = plan_id
+  local session = { buf = record.buf, channel = record.channel, registry_id = record.id }
+  M.sessions[plan_id] = session
+  return session
 end
 
 local function running_session(plan_id)
@@ -140,15 +165,24 @@ local function running_session(plan_id)
     if not session.registry_id then
       local meta = store.meta(plan_id)
       session.registry_id = session_registry.register_terminal({
+        key = session_key(plan_id),
         title = "Flow: " .. tostring(meta and meta.title or "implementation"),
         kind = "Flow implementation",
         cwd = meta and meta.worktree or vim.fn.getcwd(),
         session_id = meta and meta.session_id,
         buf = session.buf,
         channel = session.channel,
+        persistent = true,
+        pinned = true,
+        env_overrides = { CLAUDE_NVIM_FLOW_ID = plan_id },
       })
     end
     return session
+  end
+  local managed = session_registry.find_by_key(session_key(plan_id))
+  local restored = session_from_record(plan_id, managed)
+  if restored then
+    return restored
   end
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_valid(buf) and vim.b[buf].flow_plan_id == plan_id then
@@ -156,12 +190,16 @@ local function running_session(plan_id)
       session = { buf = buf, channel = channel }
       local meta = store.meta(plan_id)
       session.registry_id = session_registry.register_terminal({
+        key = session_key(plan_id),
         title = "Flow: " .. tostring(meta and meta.title or "implementation"),
         kind = "Flow implementation",
         cwd = meta and meta.worktree or vim.fn.getcwd(),
         session_id = meta and meta.session_id,
         buf = buf,
         channel = channel,
+        persistent = true,
+        pinned = true,
+        env_overrides = { CLAUDE_NVIM_FLOW_ID = plan_id },
       })
       M.sessions[plan_id] = session
       return session
@@ -176,36 +214,54 @@ local function start_terminal(plan_id, prompt, resume)
     return nil, "This plan has no implementation session."
   end
   require("claude.follow").register(meta.worktree)
-  local env = vim.tbl_extend("force", {}, (vim.uv or vim.loop).os_environ())
-  env.CLAUDE_NVIM_FLOW_ID = plan_id
+  local key = session_key(plan_id)
+  local existing = session_registry.find_by_key(key)
+  if existing and resume then
+    local opened
+    if present(prompt) then
+      opened = session_registry.send(existing.id, prompt)
+    else
+      opened = session_registry.open(existing.id)
+    end
+    if not opened then
+      return nil, "Claude Code did not resume."
+    end
+    local restored = session_from_record(plan_id, session_registry.get(existing.id))
+    if not restored then
+      return nil, "Claude Code resumed without a terminal."
+    end
+    return restored, nil
+  end
   local session, err = M.spawn_terminal(M.command(meta, prompt, resume), {
     cwd = meta.worktree,
-    env = env,
     plan_id = plan_id,
-    on_exit = function(code)
-      local current = M.sessions[plan_id]
-      if current then
-        current.exited = code
-        if current.registry_id then
-          session_registry.finish(current.registry_id, code == 0)
-        end
-      end
-    end,
+    key = key,
+    title = "Flow: " .. tostring(meta.title or "implementation"),
+    prompt = prompt,
+    session_id = meta.session_id,
+    resume_args = { "--permission-mode", M.opts.permission_mode },
+    env_overrides = { CLAUDE_NVIM_FLOW_ID = plan_id },
   })
   if not session then
     return nil, err
   end
   M.sessions[plan_id] = session
-  session.registry_id = session_registry.register_terminal({
-    title = "Flow: " .. tostring(meta.title or "implementation"),
-    kind = "Flow implementation",
-    prompt = prompt,
-    cwd = meta.worktree,
-    session_id = meta.session_id,
-    buf = session.buf,
-    channel = session.channel,
-    resume_args = { "--permission-mode", M.opts.permission_mode },
-  })
+  if not session.registry_id then
+    session.registry_id = session_registry.register_terminal({
+      key = key,
+      title = "Flow: " .. tostring(meta.title or "implementation"),
+      kind = "Flow implementation",
+      prompt = prompt,
+      cwd = meta.worktree,
+      session_id = meta.session_id,
+      buf = session.buf,
+      channel = session.channel,
+      resume_args = { "--permission-mode", M.opts.permission_mode },
+      persistent = true,
+      pinned = true,
+      env_overrides = { CLAUDE_NVIM_FLOW_ID = plan_id },
+    })
+  end
   store.set_meta(plan_id, { session_started = true }, meta.cwd)
   return session, nil
 end
@@ -500,11 +556,8 @@ function M.shutdown(plan_id)
   if not session then
     return
   end
-  if session.channel and session.channel > 0 then
-    pcall(vim.fn.jobstop, session.channel)
-  end
-  if session.buf and vim.api.nvim_buf_is_valid(session.buf) then
-    pcall(vim.api.nvim_buf_delete, session.buf, { force = true })
+  if session.registry_id then
+    session_registry.stop(session.registry_id)
   end
   M.sessions[plan_id] = nil
 end

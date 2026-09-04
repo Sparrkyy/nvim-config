@@ -260,6 +260,21 @@ check "ignores git status" "0" "$(rpc_count)"
 
 # -- Stop --------------------------------------------------------------------
 
+plan_result="$root/flow-plan-result.json"
+export CLAUDE_NVIM_FLOW_PLAN_ID="plan-terminal-1"
+export CLAUDE_NVIM_FLOW_PLAN_RESULT="$plan_result"
+MOCK_NVIM_REPLY="ready"
+out=$(run "$(payload '{cwd:$cwd, hook_event_name:"Stop", session_id:"plan-session", last_assistant_message:"# Finished plan"}')")
+check "lets a Flow planning response finish" "" "$out"
+check_json "persists a Flow plan response outside Neovim" '.summary' "# Finished plan" "$(cat "$plan_result")"
+if grep -q "flow.planner'.stop" "$MOCK_NVIM_LOG"; then
+  ok "hands the terminal plan response to Flow"
+else
+  no "hands the terminal plan response to Flow"
+fi
+unset CLAUDE_NVIM_FLOW_PLAN_ID
+unset CLAUDE_NVIM_FLOW_PLAN_RESULT
+
 export CLAUDE_NVIM_FLOW_ID="plan-1"
 MOCK_NVIM_REPLY="continue:Commit every change before stopping."
 out=$(run "$(payload '{cwd:$cwd, hook_event_name:"Stop", session_id:"flow-session"}')")

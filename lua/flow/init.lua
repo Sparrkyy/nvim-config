@@ -366,6 +366,7 @@ function M.setup()
     end,
   })
 
+  require("flow.planner").recover()
   require("flow.implementation").recover()
 end
 

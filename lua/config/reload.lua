@@ -1,12 +1,11 @@
 -- Reload the configuration without leaving Neovim.
 --
 -- It drops every `config.*`, `claude.*`, `flow.*`, and `ghostty.*` module from the Lua
--- cache, then re-runs them in the order init.lua uses. Four modules are never
+-- cache, then re-runs them in the order init.lua uses. Three modules are never
 -- dropped:
 --   config.lazy    lazy.setup() must run once per session
 --   config.reload  this file is running
---   claude.sessions  active processes and terminal buffers must stay registered
---   claude.tmux  the persistent session backend belongs to that registry
+--   claude.tmux    the persistent session backend owns live processes
 --
 -- Plugin options do not reload. lazy.nvim hands `opts` to a plugin's setup()
 -- once, when the plugin loads. Change a plugin spec and you must restart.
@@ -17,13 +16,20 @@ local PATTERNS = { "^config%.", "^claude%.", "^ghostty$", "^ghostty%.", "^flow$"
 local KEEP = {
   ["config.lazy"] = true,
   ["config.reload"] = true,
-  ["claude.sessions"] = true,
   ["claude.tmux"] = true,
 }
 
 -- The modules init.lua requires, in its order.
 local PLAIN = { "config.options", "config.keymaps", "config.autocmds" }
-local WITH_SETUP = { "config.bufstack", "config.session", "config.newfile", "claude.follow", "config.update", "flow" }
+local WITH_SETUP = {
+  "config.bufstack",
+  "config.session",
+  "config.newfile",
+  "claude.follow",
+  "config.update",
+  "config.git_ui",
+  "flow",
+}
 
 local function reloadable(name)
   if KEEP[name] then
@@ -40,6 +46,15 @@ end
 --- Let the modules that hold on to the editor let go, before they disappear.
 --- An extmark or a buffer-local keymap outlives its module otherwise.
 local function release_state()
+  local session_snapshot
+  local sessions_ok, sessions = pcall(require, "claude.sessions")
+  if sessions_ok and type(sessions.release_for_reload) == "function" then
+    local released, snapshot = pcall(sessions.release_for_reload)
+    if released then
+      session_snapshot = snapshot
+    end
+  end
+
   local follow_ok, follow = pcall(require, "claude.follow")
   if follow_ok then
     pcall(follow.clear_queue)
@@ -59,13 +74,18 @@ local function release_state()
   if review_ok then
     pcall(review.close)
   end
+  local git_ui_ok, git_ui = pcall(require, "config.git_ui")
+  if git_ui_ok then
+    pcall(git_ui.close)
+  end
+  return session_snapshot
 end
 
 --- Drop and re-run the configuration.
 ---@return table names the modules that were reloaded, sorted
 ---@return table failures { module, error } for anything that would not load
 function M.reload()
-  release_state()
+  local session_snapshot = release_state()
 
   local cleared = {}
   for name in pairs(package.loaded) do
@@ -94,6 +114,24 @@ function M.reload()
 
   for _, name in ipairs(PLAIN) do
     load(name, false)
+  end
+
+  local sessions_ok, sessions = pcall(require, "claude.sessions")
+  if not sessions_ok then
+    table.insert(failures, { module = "claude.sessions", err = tostring(sessions) })
+  else
+    if session_snapshot and type(sessions.restore_after_reload) == "function" then
+      local restored, err = pcall(sessions.restore_after_reload, session_snapshot)
+      if not restored then
+        table.insert(failures, { module = "claude.sessions.restore_after_reload", err = tostring(err) })
+      end
+    end
+    if type(sessions.setup) == "function" then
+      local setup_ok, err = pcall(sessions.setup)
+      if not setup_ok then
+        table.insert(failures, { module = "claude.sessions.setup", err = tostring(err) })
+      end
+    end
   end
 
   -- The colourscheme is a module too, so a colour edit shows up here.

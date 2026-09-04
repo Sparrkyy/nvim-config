@@ -84,14 +84,17 @@ describe("claude.sessions", function()
       kind = "AI review",
       prompt = "Map the risky changes",
       cwd = "/tmp/service",
+      session_id = "review-session",
     })
     sessions.tool(finished, "Read", "src/api.lua")
     sessions.finish(finished, true, "The boundary changed")
     local running = sessions.start({
       title = "Fix the tests",
-      kind = "one-shot",
+      kind = "terminal",
       prompt = "Repair the contract test",
       cwd = "/tmp/service",
+      channel = 42,
+      buf = vim.api.nvim_create_buf(false, true),
     })
 
     local records = sessions.manager_records()
@@ -102,6 +105,18 @@ describe("claude.sessions", function()
     assert.is_truthy(searchable:match("Map the risky changes"))
     assert.is_truthy(searchable:match("src/api%.lua"))
     assert.is_truthy(searchable:match("boundary changed"))
+  end)
+
+  it("keeps running machine-only jobs out of the TUI manager", function()
+    local id = sessions.start({
+      title = "Build review map",
+      kind = "AI review",
+      session_id = "background-review",
+    })
+
+    assert.same({}, sessions.manager_records())
+    sessions.finish(id, true, "Review map ready")
+    assert.equals(id, sessions.manager_records()[1].id)
   end)
 
   it("builds a live preview for the selected agent", function()
@@ -249,6 +264,8 @@ describe("claude.sessions", function()
     assert.is_true(vim.tbl_contains(spawned.cmd, "plan"))
     assert.equals("/tmp/project", spawned.opts.cwd)
     assert.equals("running", sessions.get(id).status)
+    assert.is_true(sessions.get(id).persistent)
+    assert.equals("claude-" .. sessions.get(id).key, sessions.get(id).tmux_name)
   end)
 
   it("creates a hidden terminal session and opens it in the manager", function()
@@ -289,6 +306,36 @@ describe("claude.sessions", function()
     assert.equals("true", spawned.opts.env.FORCE_CODE_TERMINAL)
     assert.equals("Check cancellation ", opened.default_text)
     assert.equals(-1, vim.fn.bufwinid(terminal_buf))
+  end)
+
+  it("carries Flow metadata and hook variables into a managed terminal", function()
+    local spawned
+    sessions.spawn_terminal = function(cmd, opts)
+      spawned = { cmd = cmd, opts = opts }
+      return { buf = vim.api.nvim_create_buf(false, true), channel = 42 }
+    end
+    sessions.open_telescope = function()
+      return true
+    end
+
+    local id = sessions.new_terminal_session({
+      key = "flow-plan-1",
+      title = "Flow plan",
+      kind = "Flow plan",
+      prompt = "Write the plan",
+      session_id = "flow-session",
+      cmd = { "claude", "Write the plan" },
+      resume_args = { "--permission-mode", "plan" },
+      env_overrides = { CLAUDE_NVIM_FLOW_PLAN_ID = "plan-1" },
+    })
+
+    local record = sessions.get(id)
+    assert.equals("Flow plan", record.kind)
+    assert.equals("Write the plan", record.prompt)
+    assert.same({ "--permission-mode", "plan" }, record.resume_args)
+    assert.equals("plan-1", record.env_overrides.CLAUDE_NVIM_FLOW_PLAN_ID)
+    assert.equals("plan-1", spawned.opts.env.CLAUDE_NVIM_FLOW_PLAN_ID)
+    assert.equals("true", spawned.opts.env.ENABLE_IDE_INTEGRATION)
   end)
 
   it("runs interactive Claude inside the private tmux namespace", function()
@@ -336,6 +383,7 @@ describe("claude.sessions", function()
       tmux_name = "claude-persistent-session",
       persistent = true,
       pinned = true,
+      env_overrides = { CLAUDE_NVIM_FLOW_PLAN_ID = "plan-1" },
     })
     sessions.finish(id, true, "Ready to continue")
     assert.equals(1, vim.fn.filereadable(path))
@@ -359,6 +407,56 @@ describe("claude.sessions", function()
     assert.equals("persistent-session", restored.session_id)
     assert.equals("finished", restored.status)
     assert.is_true(restored.pinned)
+    assert.equals("plan-1", restored.env_overrides.CLAUDE_NVIM_FLOW_PLAN_ID)
+  end)
+
+  it("upgrades legacy Flow records into persistent pinned TUI sessions", function()
+    local id = sessions.start({
+      title = "Plan the migration",
+      kind = "Flow plan",
+      cwd = "/tmp/project",
+      session_id = "legacy-flow-session",
+      resume_args = { "--permission-mode", "plan" },
+    })
+
+    assert.equals(1, sessions.upgrade_legacy_flow_records())
+    local record = sessions.get(id)
+    assert.is_true(record.persistent)
+    assert.is_true(record.pinned)
+    assert.equals("claude-" .. record.key, record.tmux_name)
+    assert.same({ "--permission-mode", "plan" }, record.resume_args)
+    assert.equals(0, sessions.upgrade_legacy_flow_records())
+  end)
+
+  it("opens a finished Flow record as a tmux-backed Claude TUI", function()
+    local wrapped
+    sessions.tmux.available = function()
+      return true
+    end
+    sessions.tmux.create_command = function(name, cwd, env, args)
+      wrapped = { name = name, cwd = cwd, env = env, args = args }
+      return { "tmux", "new" }
+    end
+    sessions.spawn_terminal = function(cmd)
+      assert.same({ "tmux", "new" }, cmd)
+      return { buf = vim.api.nvim_create_buf(false, true), channel = 42 }
+    end
+    local id = sessions.start({
+      title = "Implement the migration",
+      kind = "Flow implementation",
+      cwd = "/tmp/project",
+      session_id = "legacy-implementation",
+      resume_args = { "--permission-mode", "auto" },
+    })
+    sessions.finish(id, true, "Done")
+    sessions.upgrade_legacy_flow_records()
+
+    assert.is_true(sessions.ensure_tui(id))
+    assert.equals("running", sessions.get(id).status)
+    assert.equals("claude", wrapped.args[1])
+    assert.equals("--resume", wrapped.args[2])
+    assert.equals("legacy-implementation", wrapped.args[3])
+    assert.equals("/tmp/project", wrapped.cwd)
   end)
 
   it("reattaches a live tmux session after Neovim restarts", function()
@@ -480,8 +578,18 @@ describe("claude.sessions", function()
       table.insert(sent, { channel, text })
       return 1
     end
-    sessions.start({ title = "Older", kind = "terminal", channel = 11 })
-    local latest = sessions.start({ title = "Latest", kind = "terminal", channel = 22 })
+    sessions.start({
+      title = "Older",
+      kind = "terminal",
+      channel = 11,
+      buf = vim.api.nvim_create_buf(false, true),
+    })
+    local latest = sessions.start({
+      title = "Latest",
+      kind = "terminal",
+      channel = 22,
+      buf = vim.api.nvim_create_buf(false, true),
+    })
 
     assert.is_true(sessions.interrupt())
     vim.fn.chansend = original

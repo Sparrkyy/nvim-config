@@ -201,6 +201,11 @@ if printf '%s' "$page" | grep -q 'animateDiagram'; then
 else
   no "the page animates diagram flow"
 fi
+if printf '%s' "$page" | grep -q 'transform: scale(.82)'; then
+  no "diagram motion preserves Mermaid SVG transforms"
+else
+  ok "diagram motion preserves Mermaid SVG transforms"
+fi
 if printf '%s' "$page" | grep -q 'prefers-reduced-motion'; then
   ok "the page respects reduced motion"
 else
