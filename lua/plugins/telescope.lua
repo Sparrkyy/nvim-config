@@ -30,8 +30,8 @@ return {
           layout_strategy = "horizontal",
           layout_config = { prompt_position = "top", horizontal = { preview_width = 0.55 } },
           sorting_strategy = "ascending",
-          -- Start in insert mode so you can type the filter at once. Press <Esc> for normal mode.
-          initial_mode = "insert",
+          -- Start in normal mode. live_grep opts in to insert mode below.
+          initial_mode = "normal",
           mappings = {
             i = {
               ["<C-j>"] = actions.move_selection_next,
@@ -53,6 +53,8 @@ return {
         },
         pickers = {
           find_files = { hidden = true, file_ignore_patterns = { "^%.git/", "node_modules/" } },
+          -- Find in files needs a query at once, so it starts in insert mode.
+          live_grep = { initial_mode = "insert" },
         },
       })
 

@@ -79,6 +79,36 @@ describe("telescope config", function()
     assert.is_true(lhs["<leader>ff"])
     assert.is_true(lhs["<leader>fg"])
   end)
+
+  --- Run the spec's config function against a stub, and return the setup table.
+  local function setup_opts()
+    local captured
+    local action = setmetatable({}, { __add = function(a) return a end })
+    package.loaded["telescope.actions"] = setmetatable({}, {
+      __index = function() return action end,
+    })
+    package.loaded["telescope"] = {
+      setup = function(opts) captured = opts end,
+      load_extension = function() end,
+    }
+    telescope.config()
+    package.loaded["telescope"] = nil
+    package.loaded["telescope.actions"] = nil
+    return captured
+  end
+
+  it("starts every picker in normal mode", function()
+    assert.equals("normal", setup_opts().defaults.initial_mode)
+  end)
+
+  it("starts find in files in insert mode, so you can type the query at once", function()
+    assert.equals("insert", setup_opts().pickers.live_grep.initial_mode)
+  end)
+
+  it("leaves the file pickers in normal mode", function()
+    local opts = setup_opts()
+    assert.is_nil(opts.pickers.find_files.initial_mode)
+  end)
 end)
 
 describe("editor options", function()
