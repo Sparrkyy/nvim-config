@@ -216,6 +216,59 @@ describe("bufstack", function()
     assert.is_true(seen.BufReadPost)
   end)
 
+  it("keeps your place when a detour returns to the same buffer", function()
+    open(H.write_file(dir, "a.lua", { "a" }))
+    local b = open(H.write_file(dir, "b.lua", { "b" }))
+    local c = open(H.write_file(dir, "c.lua", { "c" }))
+
+    bufstack.back() -- now on b, at index 2
+
+    -- A telescope or terminal buffer fires BufEnter, then fires it again on
+    -- the file you were on. That return is not a new visit.
+    local scratch = vim.api.nvim_create_buf(true, true)
+    vim.bo[scratch].buftype = "nofile"
+    vim.api.nvim_set_current_buf(scratch)
+    vim.api.nvim_set_current_buf(b)
+
+    assert.equals(2, bufstack.state().idx)
+    bufstack.forward()
+    assert.equals(c, vim.api.nvim_get_current_buf())
+  end)
+
+  it("moves to a revisited buffer without reordering the list", function()
+    local a = open(H.write_file(dir, "a.lua", { "a" }))
+    local b = open(H.write_file(dir, "b.lua", { "b" }))
+    local c = open(H.write_file(dir, "c.lua", { "c" }))
+
+    open(vim.api.nvim_buf_get_name(a))
+
+    local state = bufstack.state()
+    assert.same({ c, b, a }, state.stack)
+    assert.equals(3, state.idx)
+  end)
+
+  it("keeps the forward entries after a jump to an old buffer", function()
+    local a = open(H.write_file(dir, "a.lua", { "a" }))
+    local b = open(H.write_file(dir, "b.lua", { "b" }))
+    open(H.write_file(dir, "c.lua", { "c" }))
+
+    open(vim.api.nvim_buf_get_name(a))
+
+    bufstack.forward()
+    assert.equals(b, vim.api.nvim_get_current_buf())
+  end)
+
+  it("still puts a buffer the list has never seen on top", function()
+    open(H.write_file(dir, "a.lua", { "a" }))
+    open(H.write_file(dir, "b.lua", { "b" }))
+    bufstack.back()
+
+    local c = open(H.write_file(dir, "c.lua", { "c" }))
+    local state = bufstack.state()
+    assert.equals(c, state.stack[1])
+    assert.equals(1, state.idx)
+  end)
+
   it("maps J and K in normal mode", function()
     local maps = {}
     for _, m in ipairs(vim.api.nvim_get_keymap("n")) do

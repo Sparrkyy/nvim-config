@@ -1,8 +1,8 @@
 -- Buffer visit stack. J walks back through visited buffers. K walks forward.
 --
--- The list works like alt-tab. A natural visit puts the buffer at index 1.
--- A J or K jump only moves the cursor `idx`. It does not reorder the list.
--- The next natural visit commits the cycle and resets `idx` to 1.
+-- The list orders buffers by first visit, newest at index 1. Revisiting a
+-- buffer only moves the cursor `idx`; it never reorders. A J or K jump also
+-- only moves `idx`.
 
 local M = {}
 
@@ -35,13 +35,17 @@ local function prune()
   end
 end
 
--- Move the buffer to index 1. Call this on a natural visit.
+-- Record a natural visit to `buf`.
+--
+-- A buffer already in the list only moves the cursor, so a detour through
+-- telescope, help, or a terminal never disturbs the walk. A buffer the list
+-- has never seen goes to index 1.
 local function record(buf)
   if cycling or not trackable(buf) then return end
   for i, b in ipairs(stack) do
     if b == buf then
-      table.remove(stack, i)
-      break
+      idx = i
+      return
     end
   end
   table.insert(stack, 1, buf)

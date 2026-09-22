@@ -504,8 +504,11 @@ closes the picker. `:GitBranches` opens the same picker.
 `<leader>t` toggles the file tree. `<leader>T` reveals the current file.
 
 `J` walks back through the buffers you visited. `K` walks forward. The list
-works like alt-tab: a normal visit puts the buffer on top, and a walk only
-moves the cursor through the list.
+holds the buffers in the order you first opened them, newest on top. A
+buffer new to the list goes on top. A buffer already in the list only takes
+the cursor, so the order never shifts under you: a detour through telescope
+or a terminal returns you to the same place, and a jump to an old buffer
+leaves the entries ahead of it, so `K` still walks forward.
 
 ### Autosave
 
